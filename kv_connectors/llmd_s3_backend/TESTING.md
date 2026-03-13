@@ -6,7 +6,18 @@ This guide covers how to test the S3 backend connector for vLLM KV cache offload
 
 - Python 3.12 (required for vLLM compatibility)
 - S3-compatible storage (AWS S3, Ceph, MinIO, etc.)
-- GPU (for vLLM testing)
+- **GPU-enabled Linux system** (CUDA or ROCm) for full vLLM integration testing
+
+### Platform Support
+
+| Platform | Unit Tests | vLLM Integration | Notes |
+|----------|-----------|------------------|-------|
+| Linux + NVIDIA GPU | ✅ | ✅ | Fully supported |
+| Linux + AMD GPU | ✅ | ✅ | Fully supported (ROCm) |
+| macOS (Apple Silicon) | ✅ | ⚠️ | vLLM doesn't support MPS; CPU-only is extremely slow (30+ min to load 3B model) |
+| Windows | ⚠️ | ❌ | Not officially supported by vLLM |
+
+**Recommendation for macOS users**: Run unit tests locally, deploy to GPU-enabled Linux system for integration testing.
 
 ## Setup
 
