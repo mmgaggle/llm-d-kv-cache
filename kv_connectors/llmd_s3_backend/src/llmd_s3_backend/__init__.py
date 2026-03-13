@@ -11,13 +11,3 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-"""S3 backend connector for vLLM KV cache offloading."""
-
-__version__ = "0.1.0"
-
-from llmd_s3_backend.factory import *  # noqa: F401, F403
-
-__all__ = ["__version__"]
-
-# Made with Bob

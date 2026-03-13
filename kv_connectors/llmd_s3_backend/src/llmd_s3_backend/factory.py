@@ -21,5 +21,3 @@ logger = init_logger(__name__)
 OffloadingSpecFactory.register_spec(
     "S3OffloadingSpec", "llmd_s3_backend.spec", "S3OffloadingSpec"
 )
-
-# Made with Bob
