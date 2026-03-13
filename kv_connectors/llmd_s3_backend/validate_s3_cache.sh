@@ -23,12 +23,12 @@
 set -e
 
 # Configuration
-VLLM_URL="${VLLM_URL:-http://localhost:8000}"
+VLLM_PORT="${VLLM_PORT:-8000}"
+VLLM_URL="${VLLM_URL:-http://localhost:${VLLM_PORT}}"
 MODEL="${MODEL:-ibm-granite/granite-3b-code-instruct}"
 S3_BUCKET="${S3_BUCKET:-vllm}"
 S3_PROFILE="${S3_PROFILE:-zgw}"
 S3_PREFIX="${S3_PREFIX:-kv-cache}"
-VLLM_PORT="${VLLM_PORT:-8000}"
 AUTO_START="${AUTO_START:-true}"
 
 # Colors for output
