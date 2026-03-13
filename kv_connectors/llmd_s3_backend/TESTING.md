@@ -199,6 +199,25 @@ python test_ceph.py
 
 ## Testing with vLLM
 
+### Download Model (Optional but Recommended)
+
+To see download progress and avoid timeouts, pre-download the model:
+
+```bash
+source venv/bin/activate
+./download_model.sh
+```
+
+This will:
+- Download the Granite 3B model with progress indicators
+- Cache it locally in `~/.cache/huggingface/hub` (or `$HF_HOME`)
+- Allow vLLM to start faster on subsequent runs
+
+You can also download a different model:
+```bash
+MODEL=ibm-granite/granite-8b-code-instruct ./download_model.sh
+```
+
 ### Small Model Test (Granite 3B)
 
 1. Ensure virtual environment is activated:
@@ -206,7 +225,12 @@ python test_ceph.py
 source venv/bin/activate
 ```
 
-2. Start vLLM server with S3 backend:
+2. (Optional) Download model first to see progress:
+```bash
+./download_model.sh
+```
+
+3. Start vLLM server with S3 backend:
 
 **For AWS S3:**
 ```bash
