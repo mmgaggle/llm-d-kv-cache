@@ -95,20 +95,20 @@ start_vllm() {
     print_status "INFO" "vLLM starting (PID: $VLLM_PID)..."
     print_status "INFO" "Logs: vllm_validation.log"
     
-    # Wait for vLLM to be ready (up to 120 seconds)
-    print_status "INFO" "Waiting for vLLM to be ready..."
-    for i in {1..120}; do
+    # Wait for vLLM to be ready (up to 600 seconds / 10 minutes)
+    print_status "INFO" "Waiting for vLLM to be ready (this may take several minutes for model download/loading)..."
+    for i in {1..600}; do
         if curl -s "${VLLM_URL}/health" > /dev/null 2>&1; then
             print_status "OK" "vLLM server is ready (took ${i}s)"
             return 0
         fi
         sleep 1
-        if [ $((i % 10)) -eq 0 ]; then
+        if [ $((i % 30)) -eq 0 ]; then
             echo -n "."
         fi
     done
     
-    print_status "FAIL" "vLLM failed to start within 120 seconds"
+    print_status "FAIL" "vLLM failed to start within 600 seconds (10 minutes)"
     echo "Check logs: tail -f vllm_validation.log"
     exit 1
 }
