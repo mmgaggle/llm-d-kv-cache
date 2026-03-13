@@ -1,0 +1,42 @@
+[build-system]
+requires = [
+    "setuptools>=65",
+    "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llmd_s3_connector"
+version = "0.1.0"
+description = "S3 backend connector for vLLM KV cache offloading"
+readme = "README.md"
+authors = [
+    { name = "llm-d community" }
+]
+maintainers = [
+    { name = "llm-d community" }
+]
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.1",
+    "boto3>=1.34.0",
+    "botocore>=1.34.0",
+    "numpy>=1.24.0",
+]
+
+[tool.setuptools]
+packages = ["llmd_s3_backend"]
+package-dir = {"" = "src"}
+
+[project.optional-dependencies]
+dev = [
+    "vllm>=0.11.0",
+    "pytest>=7.0",
+    "black>=23.0",
+    "ruff>=0.1.0",
+    "moto>=4.0",  # for S3 mocking in tests
+]
+
+[project.urls]
+Homepage = "https://github.com/llm-d/llm-d-kv-cache-manager"
+Repository = "https://github.com/llm-d/llm-d-kv-cache-manager"
