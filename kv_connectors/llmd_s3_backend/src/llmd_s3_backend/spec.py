@@ -65,6 +65,12 @@ class S3OffloadingSpec(OffloadingSpec):
         self.max_staging_memory_gb = self.extra_config.get(
             "max_staging_memory_gb", DEFAULT_MAX_STAGING_MEMORY_GB
         )
+        
+        # Presence cache configuration (optional)
+        self.enable_presence_cache = self.extra_config.get("enable_presence_cache", False)
+        self.manifest_prefix = self.extra_config.get("manifest_prefix", "manifests")
+        self.compaction_threshold = int(self.extra_config.get("compaction_threshold", 100))
+        self.compaction_interval_hours = int(self.extra_config.get("compaction_interval_hours", 24))
 
         self.gpu_blocks_per_file = int(
             self.offloaded_block_size / self.gpu_block_size
@@ -89,6 +95,10 @@ class S3OffloadingSpec(OffloadingSpec):
                 endpoint_url=self.s3_endpoint_url,
                 addressing_style=self.s3_addressing_style,
                 profile_name=self.s3_profile_name,
+                enable_presence_cache=self.enable_presence_cache,
+                manifest_prefix=self.manifest_prefix,
+                compaction_threshold=self.compaction_threshold,
+                compaction_interval_hours=self.compaction_interval_hours,
             )
         return self._manager
 

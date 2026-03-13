@@ -96,6 +96,37 @@ class S3ClientWrapper:
         """Download data from S3."""
         response = self.s3_client.get_object(Bucket=self.bucket, Key=key)
         return response["Body"].read()
+    
+    def get_object_with_etag(self, key: str) -> tuple[bytes, str]:
+        """
+        Download data from S3 with ETag for conditional updates.
+        
+        Returns:
+            Tuple of (data, etag)
+        """
+        response = self.s3_client.get_object(Bucket=self.bucket, Key=key)
+        data = response["Body"].read()
+        etag = response["ETag"].strip('"')  # Remove quotes from ETag
+        return data, etag
+    
+    def put_object_if_match(self, key: str, data: bytes, etag: str) -> None:
+        """
+        Upload data to S3 only if ETag matches (conditional PUT).
+        
+        Args:
+            key: S3 object key
+            data: Data to upload
+            etag: Expected ETag value
+            
+        Raises:
+            botocore.exceptions.ClientError: If ETag doesn't match (412 Precondition Failed)
+        """
+        self.s3_client.put_object(
+            Bucket=self.bucket,
+            Key=key,
+            Body=data,
+            IfMatch=etag
+        )
 
     def delete_object(self, key: str) -> None:
         """Delete an object from S3."""

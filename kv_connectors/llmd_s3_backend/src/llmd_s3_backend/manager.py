@@ -13,8 +13,10 @@
 # limitations under the License.
 
 import torch
+import threading
+import time
 from collections.abc import Iterable
-from typing import Optional
+from typing import Optional, Set
 
 from vllm.v1.core.kv_cache_utils import BlockHash
 from llmd_s3_backend.mediums import S3LoadStoreSpec
@@ -27,6 +29,13 @@ from vllm.v1.kv_offload.abstract import (
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
+
+try:
+    from llmd_s3_backend.manifest import ManifestManager
+    MANIFEST_AVAILABLE = True
+except ImportError:
+    MANIFEST_AVAILABLE = False
+    logger.warning("Manifest support not available")
 
 
 class S3OffloadingManager(OffloadingManager):
@@ -46,6 +55,10 @@ class S3OffloadingManager(OffloadingManager):
         endpoint_url: Optional[str] = None,
         addressing_style: str = "auto",
         profile_name: Optional[str] = None,
+        enable_presence_cache: bool = False,
+        manifest_prefix: str = "manifests",
+        compaction_threshold: int = 100,
+        compaction_interval_hours: int = 24,
     ) -> None:
         """
         Initialize S3 offloading manager.
@@ -61,6 +74,10 @@ class S3OffloadingManager(OffloadingManager):
             endpoint_url: Custom S3 endpoint URL
             addressing_style: S3 addressing style
             profile_name: AWS profile name
+            enable_presence_cache: Enable presence cache with manifest (default: False)
+            manifest_prefix: S3 prefix for manifest files (default: "manifests")
+            compaction_threshold: Number of delta files before compaction (default: 100)
+            compaction_interval_hours: Hours between compactions (default: 24)
         """
         # Basic metadata about the model and tensor parallelism
         self.model_name = model_name
@@ -69,6 +86,7 @@ class S3OffloadingManager(OffloadingManager):
         self.dtype = dtype
         self.bucket = bucket
         self.prefix = prefix
+        self.enable_presence_cache = enable_presence_cache
 
         # Initialize S3 client
         self.s3_client = S3ClientWrapper(
@@ -83,10 +101,80 @@ class S3OffloadingManager(OffloadingManager):
         dtype_str = str(dtype).replace("torch.", "")
         self.base_key = f"{prefix}/{model_name}/tp_{tp_size}/rank_{tp_rank}/{dtype_str}"
 
+        # Optional presence cache with manifest
+        self._presence_cache: Optional[Set[str]] = None
+        self._cache_lock = threading.Lock()
+        self._manifest_manager: Optional[ManifestManager] = None
+        
+        if enable_presence_cache:
+            if not MANIFEST_AVAILABLE:
+                logger.warning("Presence cache requested but manifest module not available")
+            else:
+                self._init_presence_cache(
+                    manifest_prefix=manifest_prefix,
+                    compaction_threshold=compaction_threshold,
+                    compaction_interval_hours=compaction_interval_hours,
+                )
+
         logger.info(
             f"S3OffloadingManager initialized: bucket={bucket}, "
-            f"base_key={self.base_key}"
+            f"base_key={self.base_key}, presence_cache={enable_presence_cache}"
         )
+    
+    def _init_presence_cache(
+        self,
+        manifest_prefix: str,
+        compaction_threshold: int,
+        compaction_interval_hours: int,
+    ):
+        """Initialize presence cache with manifest support."""
+        try:
+            # Initialize manifest manager
+            self._manifest_manager = ManifestManager(
+                s3_client=self.s3_client,
+                model_name=self.model_name,
+                tp_size=self.tp_size,
+                tp_rank=self.tp_rank,
+                dtype=str(self.dtype).replace("torch.", ""),
+                manifest_prefix=manifest_prefix,
+                compaction_threshold=compaction_threshold,
+                compaction_interval_hours=compaction_interval_hours,
+            )
+            
+            # Load manifest and pre-warm cache
+            manifest = self._manifest_manager.load_manifest()
+            self._presence_cache = set(manifest.keys())
+            
+            logger.info(f"Pre-warmed presence cache with {len(self._presence_cache)} blocks")
+            
+            # Start background refresh thread
+            self._refresh_thread = threading.Thread(
+                target=self._refresh_cache_loop,
+                daemon=True
+            )
+            self._refresh_thread.start()
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize presence cache: {e}")
+            self._presence_cache = set()
+    
+    def _refresh_cache_loop(self):
+        """Periodically refresh presence cache from manifest."""
+        while True:
+            try:
+                time.sleep(300)  # Refresh every 5 minutes
+                
+                if self._manifest_manager:
+                    manifest = self._manifest_manager.load_manifest()
+                    with self._cache_lock:
+                        new_blocks = set(manifest.keys()) - self._presence_cache
+                        self._presence_cache.update(new_blocks)
+                        if new_blocks:
+                            logger.info(f"Refreshed cache, added {len(new_blocks)} new blocks")
+                            
+            except Exception as e:
+                logger.error(f"Error refreshing cache: {e}")
+                time.sleep(60)  # Wait before retry
 
     def _get_s3_key(self, block_hash: BlockHash) -> str:
         """
@@ -105,12 +193,29 @@ class S3OffloadingManager(OffloadingManager):
     def lookup(self, block_hashes: Iterable[BlockHash]) -> int:
         """
         Return how many consecutive blocks from the start are already offloaded.
+        Uses presence cache if enabled, otherwise falls back to HEAD requests.
         """
         hit_count = 0
         for block_hash in block_hashes:
+            block_hash_str = str(block_hash) if not isinstance(block_hash, str) else block_hash
+            
+            # Check presence cache first if enabled
+            if self._presence_cache is not None:
+                with self._cache_lock:
+                    if block_hash_str in self._presence_cache:
+                        hit_count += 1
+                        continue
+            
+            # Not in cache or cache disabled - check S3
             s3_key = self._get_s3_key(block_hash)
             if not self.s3_client.object_exists(s3_key):
-                break
+                break  # Miss - stop checking
+            
+            # Found in S3 - add to cache if enabled
+            if self._presence_cache is not None:
+                with self._cache_lock:
+                    self._presence_cache.add(block_hash_str)
+            
             hit_count += 1
         return hit_count
 
@@ -160,8 +265,25 @@ class S3OffloadingManager(OffloadingManager):
         self, block_hashes: Iterable[BlockHash], success: bool = True
     ):
         """
-        For S3, storing is stateless - no action needed.
+        Update presence cache and manifest when blocks are stored.
         """
-        pass
+        if not success:
+            return
+        
+        block_hashes_list = list(block_hashes)
+        
+        # Update presence cache if enabled
+        if self._presence_cache is not None:
+            block_hash_strs = [
+                str(bh) if not isinstance(bh, str) else bh
+                for bh in block_hashes_list
+            ]
+            with self._cache_lock:
+                self._presence_cache.update(block_hash_strs)
+        
+        # Update manifest if enabled
+        if self._manifest_manager is not None:
+            s3_keys = [self._get_s3_key(bh) for bh in block_hashes_list]
+            self._manifest_manager.queue_add_blocks(block_hashes_list, s3_keys)
 
 # Made with Bob
