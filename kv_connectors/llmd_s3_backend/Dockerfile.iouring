@@ -1,0 +1,54 @@
+# Dockerfile for io_uring development and testing
+# Provides Linux environment with io_uring support for macOS development
+
+FROM ubuntu:22.04
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
+    build-essential \
+    liburing-dev \
+    liburing2 \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Python 3.11 as default
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+
+# Upgrade pip
+RUN python3 -m pip install --upgrade pip setuptools wheel
+
+# Install io_uring Python bindings
+RUN pip3 install liburing
+
+# Install PyTorch (CPU version for testing)
+RUN pip3 install torch --index-url https://download.pytorch.org/whl/cpu
+
+# Install other Python dependencies
+RUN pip3 install \
+    pytest \
+    pytest-asyncio \
+    numpy \
+    fastavro \
+    boto3 \
+    httpx[http2]
+
+# Create working directory
+WORKDIR /workspace
+
+# Copy source code
+COPY . /workspace/
+
+# Install package in development mode
+RUN pip3 install -e .
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV IOURING_AVAILABLE=1
+
+# Default command
+CMD ["/bin/bash"]

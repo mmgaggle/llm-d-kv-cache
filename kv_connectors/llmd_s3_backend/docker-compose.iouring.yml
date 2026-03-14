@@ -1,0 +1,59 @@
+# Docker Compose for io_uring development on macOS
+# Provides Linux environment with io_uring support
+
+version: '3.8'
+
+services:
+  iouring-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.iouring
+    container_name: llmd-s3-iouring-dev
+    volumes:
+      # Mount source code for live development
+      - ./src:/workspace/src
+      - ./tests:/workspace/tests
+      - ./docs:/workspace/docs
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    # Enable io_uring (requires Docker with proper kernel support)
+    cap_add:
+      - SYS_ADMIN
+      - SYS_RESOURCE
+    security_opt:
+      - seccomp:unconfined
+    # Network for S3 access
+    network_mode: bridge
+    environment:
+      - PYTHONUNBUFFERED=1
+      - IOURING_AVAILABLE=1
+      - AWS_PROFILE=zgw
+    command: /bin/bash
+
+  # Optional: Ceph RGW (S3-compatible) for testing
+  # Note: For production testing, use your existing Ceph cluster
+  # This is a minimal single-node setup for development only
+  ceph-rgw:
+    image: quay.io/ceph/daemon:latest
+    container_name: llmd-s3-ceph-rgw
+    ports:
+      - "8080:8080"
+    environment:
+      CEPH_DAEMON: demo
+      DEMO_DAEMONS: rgw
+      RGW_CIVETWEB_PORT: 8080
+      NETWORK_AUTO_DETECT: 4
+    volumes:
+      - ceph-data:/var/lib/ceph
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    # Note: Default credentials are demo/demo
+
+volumes:
+  ceph-data:
+
+# Made with Bob
