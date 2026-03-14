@@ -1,16 +1,16 @@
 # io_uring Development Guide
 
-This guide explains how to develop and test the io_uring zero-copy integration on macOS using Docker containers.
+This guide explains how to develop and test the io_uring zero-copy integration on macOS using Podman containers.
 
 ## Overview
 
-Since io_uring is a Linux-specific feature (kernel 5.1+), macOS developers need a Linux environment for development and testing. We provide Docker containers with all necessary dependencies pre-installed.
+Since io_uring is a Linux-specific feature (kernel 5.1+), macOS developers need a Linux environment for development and testing. We provide Podman containers with all necessary dependencies pre-installed.
 
 ## Prerequisites
 
-- Docker Desktop for Mac (with Linux VM support)
-- Docker Compose
-- At least 4GB RAM allocated to Docker
+- Podman Desktop for Mac (with Linux VM support)
+- Podman Compose
+- At least 4GB RAM allocated to Podman
 
 ## Quick Start
 
@@ -18,18 +18,18 @@ Since io_uring is a Linux-specific feature (kernel 5.1+), macOS developers need 
 
 ```bash
 cd kv_connectors/llmd_s3_backend
-docker-compose -f docker-compose.iouring.yml build
+podman-compose -f podman-compose.iouring.yml build
 ```
 
 ### 2. Start the Development Environment
 
 ```bash
 # Start container with interactive shell
-docker-compose -f docker-compose.iouring.yml run --rm iouring-dev
+podman-compose -f podman-compose.iouring.yml run --rm iouring-dev
 
 # Or start in background
-docker-compose -f docker-compose.iouring.yml up -d
-docker-compose -f docker-compose.iouring.yml exec iouring-dev bash
+podman-compose -f podman-compose.iouring.yml up -d
+podman-compose -f podman-compose.iouring.yml exec iouring-dev bash
 ```
 
 ### 3. Run Tests Inside Container
@@ -44,7 +44,7 @@ python -m pytest tests/test_iouring_pool.py -v  # When implemented
 
 ```bash
 # Start Ceph RGW alongside dev container
-docker-compose -f docker-compose.iouring.yml up -d ceph-rgw
+podman-compose -f podman-compose.iouring.yml up -d ceph-rgw
 
 # Access Ceph RGW at http://localhost:8080
 # Default credentials: demo/demo
@@ -152,11 +152,11 @@ EOF
 
 ### Container Won't Start
 
-**Issue:** `docker-compose up` fails with capability errors
+**Issue:** `podman-compose up` fails with capability errors
 
-**Solution:** Ensure Docker Desktop has sufficient permissions:
+**Solution:** Ensure Podman Desktop has sufficient permissions:
 ```bash
-# Check Docker Desktop settings
+# Check Podman Desktop settings
 # Preferences → Resources → Advanced
 # Ensure "Use kernel networking for UDP" is enabled
 ```
@@ -167,7 +167,7 @@ EOF
 
 **Solution:** Verify kernel version and rebuild container:
 ```bash
-docker-compose -f docker-compose.iouring.yml build --no-cache
+podman-compose -f podman-compose.iouring.yml build --no-cache
 ```
 
 ### Permission Denied Errors
@@ -200,16 +200,16 @@ export S3_ENDPOINT=http://s3.cephlab.com
 
 ## Performance Considerations
 
-### Docker on macOS Limitations
+### Podman on macOS Limitations
 
-Docker Desktop on macOS runs Linux in a VM, which adds overhead:
+Podman Desktop on macOS runs Linux in a VM, which adds overhead:
 - **Network:** ~10-20% slower than native Linux
 - **Disk I/O:** Significantly slower for bind mounts
 - **Memory:** Shared with macOS, may cause swapping
 
 ### Optimization Tips
 
-1. **Use Docker volumes instead of bind mounts for data:**
+1. **Use Podman volumes instead of bind mounts for data:**
    ```yaml
    volumes:
      - iouring-data:/data  # Fast
@@ -218,20 +218,20 @@ Docker Desktop on macOS runs Linux in a VM, which adds overhead:
    ```
 
 2. **Allocate sufficient resources:**
-   - Docker Desktop → Preferences → Resources
+   - Podman Desktop → Preferences → Resources
    - CPUs: 4+
    - Memory: 8GB+
    - Swap: 2GB+
 
 3. **Use BuildKit for faster builds:**
    ```bash
-   export DOCKER_BUILDKIT=1
-   docker-compose build
+   export BUILDAH_FORMAT=1
+   podman-compose build
    ```
 
 ## Production Deployment
 
-The io_uring implementation is designed to work on native Linux systems. The Docker container is for **development and testing only**.
+The io_uring implementation is designed to work on native Linux systems. The Podman container is for **development and testing only**.
 
 For production:
 1. Deploy on Linux hosts with kernel 5.1+
@@ -251,5 +251,5 @@ For production:
 
 - [io_uring documentation](https://kernel.dk/io_uring.pdf)
 - [liburing GitHub](https://github.com/axboe/liburing)
-- [Docker Desktop for Mac](https://docs.docker.com/desktop/mac/)
+- [Podman Desktop for Mac](https://docs.docker.com/desktop/mac/)
 - [MinIO Documentation](https://min.io/docs/minio/linux/index.html)

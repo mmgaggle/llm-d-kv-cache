@@ -1,4 +1,4 @@
-# Dockerfile for io_uring development and testing
+# Podmanfile for io_uring development and testing
 # Provides Linux environment with io_uring support for macOS development
 
 FROM ubuntu:22.04
