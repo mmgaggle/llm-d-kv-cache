@@ -93,6 +93,237 @@ class IoUringContext:
         self.queue_depth = queue_depth
         self.ring = liburing.io_uring(queue_depth, flags)
         self.stats = IoUringStats()
+        
+        # Buffer registration for zero-copy
+        self.registered_buffers = []
+        self.buffer_map = {}  # buffer_id -> (address, size)
+        
+        # Detect buffer registration support at runtime
+        self._buffer_registration_supported = None
+        self._next_user_data = 1
+    
+    def supports_buffer_registration(self) -> bool:
+        """
+        Check if the kernel supports buffer registration.
+        
+        Buffer registration (IORING_REGISTER_BUFFERS) was added in Linux 5.1
+        but may not be available in all kernels (e.g., minimal VM kernels).
+        
+        Returns:
+            True if buffer registration is supported, False otherwise
+        """
+        if self._buffer_registration_supported is not None:
+            return self._buffer_registration_supported
+        
+        # Try to register a small test buffer
+        test_buf = bytearray(4096)
+        test_iov = liburing.iovec(test_buf)
+        
+        try:
+            ret = liburing.io_uring_register_buffers(self.ring, test_iov, 1)
+            if ret == 0:
+                # Success - unregister immediately
+                liburing.io_uring_unregister_buffers(self.ring)
+                self._buffer_registration_supported = True
+                return True
+            elif ret == -38:  # ENOSYS
+                self._buffer_registration_supported = False
+                return False
+            else:
+                # Other error - assume not supported
+                self._buffer_registration_supported = False
+                return False
+        except OSError as e:
+            if e.errno == 38:  # ENOSYS
+                self._buffer_registration_supported = False
+                return False
+            # Other errors - assume not supported
+            self._buffer_registration_supported = False
+            return False
+    
+    def register_buffers(self, buffers: List[memoryview]) -> List[int]:
+        """
+        Register buffers with the kernel for zero-copy I/O.
+        
+        This enables use of IORING_OP_READ_FIXED and IORING_OP_WRITE_FIXED
+        for true zero-copy data transfer between kernel and userspace.
+        
+        Args:
+            buffers: List of memory views to register (must be page-aligned)
+            
+        Returns:
+            List of buffer IDs for use with fixed buffer operations
+            
+        Raises:
+            OSError: If buffer registration fails
+            ValueError: If buffers are already registered
+            RuntimeError: If buffer registration is not supported by kernel
+        """
+        if self.registered_buffers:
+            raise ValueError("Buffers already registered. Call unregister_buffers() first.")
+        
+        if not buffers:
+            return []
+        
+        # Check if buffer registration is supported
+        if not self.supports_buffer_registration():
+            raise RuntimeError(
+                "Buffer registration (IORING_REGISTER_BUFFERS) is not supported by this kernel. "
+                "This feature requires Linux 5.1+ with CONFIG_IO_URING fully enabled. "
+                "The current kernel may be a minimal VM kernel (e.g., Podman on macOS). "
+                "For development, tests will be skipped. For production, use a full Linux kernel."
+            )
+        
+        # Convert to iovec structures for liburing
+        iovecs = []
+        for buf in buffers:
+            # Get the underlying buffer object
+            if hasattr(buf, 'obj'):
+                # memoryview has obj attribute
+                buf_ptr = buf.obj
+            else:
+                # Direct buffer object
+                buf_ptr = buf
+            
+            # Create iovec structure - liburing.iovec() takes the buffer as argument
+            iov = liburing.iovec(buf_ptr)
+            iovecs.append(iov)
+        
+        # For single buffer, pass directly; for multiple, need array
+        if len(iovecs) == 1:
+            ret = liburing.io_uring_register_buffers(self.ring, iovecs[0], 1)
+        else:
+            # For multiple buffers, we need to pass them individually
+            # This is a limitation of the current liburing Python binding
+            raise NotImplementedError(
+                "Registering multiple buffers is not yet supported due to liburing Python binding limitations. "
+                "Register buffers one at a time or use IORING_OP_READ instead of IORING_OP_READ_FIXED."
+            )
+        
+        if ret < 0:
+            errno = -ret
+            raise OSError(
+                errno,
+                f"Failed to register {len(buffers)} buffers with io_uring: {os.strerror(errno)}"
+            )
+        
+        # Track registered buffers
+        buffer_ids = []
+        for i, buf in enumerate(buffers):
+            buffer_id = len(self.registered_buffers)
+            self.registered_buffers.append(buf)
+            
+            # Store buffer metadata for validation
+            if hasattr(buf, 'obj'):
+                buf_addr = id(buf.obj)  # Use object ID as address proxy
+            else:
+                buf_addr = id(buf)
+            
+            self.buffer_map[buffer_id] = (buf_addr, len(buf))
+            buffer_ids.append(buffer_id)
+        
+        return buffer_ids
+    
+    def unregister_buffers(self):
+        """
+        Unregister all buffers from the kernel.
+        
+        Must be called before closing the io_uring context if buffers
+        were registered.
+        """
+        if not self.registered_buffers:
+            return
+        
+        ret = liburing.io_uring_unregister_buffers(self.ring)
+        if ret < 0:
+            # Log warning but don't raise - we're likely cleaning up
+            import logging
+            logging.warning(
+                f"Failed to unregister buffers: {os.strerror(-ret)}"
+            )
+        
+        self.registered_buffers.clear()
+        self.buffer_map.clear()
+    
+    def prep_read_fixed(
+        self,
+        fd: int,
+        buffer_id: int,
+        offset: int,
+        length: int,
+        file_offset: int = 0
+    ) -> int:
+        """
+        Prepare a fixed buffer read operation (zero-copy).
+        
+        Uses IORING_OP_READ_FIXED to read directly into a registered buffer
+        without copying through userspace. This is the key operation for
+        achieving true zero-copy performance.
+        
+        Args:
+            fd: File descriptor to read from
+            buffer_id: ID of registered buffer (from register_buffers())
+            offset: Offset within the buffer to start writing
+            length: Number of bytes to read
+            file_offset: Offset in the file to start reading from
+            
+        Returns:
+            User data ID for tracking completion
+            
+        Raises:
+            ValueError: If buffer_id is invalid or read exceeds buffer size
+            RuntimeError: If no SQE is available
+        """
+        # Validate buffer ID
+        if buffer_id not in self.buffer_map:
+            raise ValueError(
+                f"Buffer ID {buffer_id} not registered. "
+                f"Valid IDs: {list(self.buffer_map.keys())}"
+            )
+        
+        buf_addr, buf_size = self.buffer_map[buffer_id]
+        if offset + length > buf_size:
+            raise ValueError(
+                f"Read would exceed buffer size: "
+                f"offset={offset} + length={length} > size={buf_size}"
+            )
+        
+        # Get submission queue entry
+        sqe = self.get_sqe()
+        if sqe is None:
+            raise RuntimeError("No SQE available - queue is full")
+        
+        # Get the actual buffer from registered list
+        buf = self.registered_buffers[buffer_id]
+        
+        # Calculate target address (buffer base + offset)
+        if hasattr(buf, 'obj'):
+            # memoryview - get underlying buffer
+            import ctypes
+            buf_ptr = ctypes.addressof(ctypes.c_char.from_buffer(buf.obj))
+        else:
+            # Direct buffer
+            import ctypes
+            buf_ptr = ctypes.addressof(ctypes.c_char.from_buffer(buf))
+        
+        target_addr = buf_ptr + offset
+        
+        # Prepare fixed buffer read
+        liburing.io_uring_prep_read_fixed(
+            sqe,
+            fd,
+            target_addr,
+            length,
+            file_offset,
+            buffer_id  # Index in registered buffer array
+        )
+        
+        # Allocate and set user data for tracking
+        user_data = self.allocate_user_data(OpType.RECV)
+        liburing.io_uring_sqe_set_data64(sqe, user_data)
+        
+        self.stats.submissions += 1
+        return user_data
         self._next_user_data = 1
         
     def get_sqe(self) -> 'liburing.io_uring_sqe':
@@ -222,7 +453,11 @@ class IoUringContext:
         return user_data
     
     def close(self):
-        """Close io_uring context."""
+        """Close io_uring context and unregister buffers."""
+        # Unregister buffers first if any were registered
+        if hasattr(self, 'registered_buffers') and self.registered_buffers:
+            self.unregister_buffers()
+        
         if hasattr(self, 'ring'):
             # The liburing Python binding automatically calls io_uring_queue_exit
             # when the ring object is deleted, so we just need to delete it
