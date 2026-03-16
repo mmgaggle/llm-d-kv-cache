@@ -37,10 +37,11 @@ With presence cache:
           │                     │ S3 Bucket           │
           │                     │                     │
           │                     │ manifests/          │
-          │                     │ ├─ snapshot-001.avro│
-          │                     │ ├─ snapshot-002.avro│
-          │                     │ ├─ delta-003.avro   │
-          │                     │ └─ delta-004.avro   │
+          │                     │ └─ model/tp_4/rank_0/float16/│
+          │                     │    ├─ snapshot-001.avro      │
+          │                     │    ├─ snapshot-002.avro      │
+          │                     │    ├─ delta-003.avro         │
+          │                     │    └─ delta-004.avro         │
           │                     │                     │
           └─────────────────────│ kv-cache/           │
                                 │ └─ (cache blocks)   │
@@ -141,6 +142,115 @@ vllm serve model-name \
 | `manifest_prefix` | str | `"manifests"` | S3 prefix for manifest files |
 | `compaction_threshold` | int | `100` | Number of delta files before compaction |
 | `compaction_interval_hours` | int | `24` | Hours between compactions |
+| `cache_max_size` | int | `1000000` | Maximum blocks in LRU cache (null for unbounded) |
+
+### Manifest Scoping
+
+Manifest files are **automatically scoped per vLLM instance** based on:
+- Model name
+- Tensor parallelism size (tp_size)
+- Tensor parallelism rank (tp_rank)
+- Data type (dtype)
+
+This ensures each instance only loads relevant cache blocks, preventing memory waste from loading blocks for different models or configurations.
+
+**Example manifest paths:**
+```
+manifests/llama3-70b/tp_8/rank_0/float16/current-snapshot.avro
+manifests/llama3-70b/tp_8/rank_1/float16/current-snapshot.avro
+manifests/qwen3-32b/tp_4/rank_0/bfloat16/current-snapshot.avro
+```
+
+### Manifest Sharing in Kubernetes
+
+Instances with **identical configurations share the same manifest**, making this perfect for scaled Kubernetes deployments:
+
+**Example: 3 replicas of Llama3-70B with TP=8, rank 0, float16**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Kubernetes Deployment (replicas: 3)                        │
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
+│  │ Pod 1        │  │ Pod 2        │  │ Pod 3        │     │
+│  │ rank_0       │  │ rank_0       │  │ rank_0       │     │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘     │
+│         │                 │                 │              │
+│         └─────────────────┼─────────────────┘              │
+│                           │                                │
+└───────────────────────────┼────────────────────────────────┘
+                            │
+                            ▼
+              ┌─────────────────────────────┐
+              │ Shared Manifest             │
+              │ manifests/llama3-70b/       │
+              │   tp_8/rank_0/float16/      │
+              │   └─ current-snapshot.avro  │
+              └─────────────────────────────┘
+```
+
+All 3 pods:
+- ✅ **Share the same manifest** (same model/tp_size/tp_rank/dtype)
+- ✅ **Coordinate writes** using conditional PUT (ETag-based concurrency control)
+- ✅ **See each other's blocks** via periodic cache refresh (every 5 minutes)
+- ✅ **Avoid redundant HEAD requests** for blocks written by other pods
+
+**But different configurations get separate manifests:**
+
+```
+Llama3-70B TP=8 rank 0 float16:  manifests/llama3-70b/tp_8/rank_0/float16/
+Llama3-70B TP=8 rank 1 float16:  manifests/llama3-70b/tp_8/rank_1/float16/
+Llama3-70B TP=4 rank 0 float16:  manifests/llama3-70b/tp_4/rank_0/float16/
+Qwen3-32B TP=4 rank 0 bfloat16:  manifests/qwen3-32b/tp_4/rank_0/bfloat16/
+```
+
+### Benefits of Scoped Manifests
+
+✅ **Memory Efficiency**: Each instance only caches relevant blocks
+✅ **Higher Hit Rate**: LRU cache focuses on frequently accessed blocks for that config
+✅ **Automatic Sharing**: K8s replicas with identical configs share manifests
+✅ **Isolation**: Different models/configs don't pollute each other's caches
+✅ **Scalability**: Add replicas without increasing per-instance memory usage
+
+### Multi-Model Deployment Example
+
+```yaml
+# Deployment 1: Llama3-70B with TP=8 (8 ranks × 3 replicas = 24 pods)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: llama3-70b-tp8
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+      - name: vllm
+        env:
+        - name: VLLM_TP_SIZE
+          value: "8"
+        # Each rank (0-7) gets 3 replicas sharing the same manifest
+        # Total: 8 unique manifests (one per rank)
+
+# Deployment 2: Qwen3-32B with TP=4 (4 ranks × 2 replicas = 8 pods)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: qwen3-32b-tp4
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+      - name: vllm
+        env:
+        - name: VLLM_TP_SIZE
+          value: "4"
+        # Each rank (0-3) gets 2 replicas sharing the same manifest
+        # Total: 4 unique manifests (one per rank)
+```
+
+**Result**: 32 total pods, but only 12 unique manifests (8 for Llama3 + 4 for Qwen3). Each pod only loads blocks relevant to its configuration, preventing memory waste from loading blocks for different models or tensor parallelism configurations.
 
 ## How It Works
 

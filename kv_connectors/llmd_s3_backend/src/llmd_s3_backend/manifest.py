@@ -203,17 +203,29 @@ class ManifestManager:
         
         logger.info(f"ManifestManager initialized: prefix={manifest_prefix}")
     
+    def _get_instance_prefix(self) -> str:
+        """
+        Get instance-specific prefix for manifest files.
+        
+        Scopes manifests by model, tp_size, tp_rank, and dtype to prevent
+        different vLLM instances from loading irrelevant cache blocks.
+        
+        Returns:
+            str: Prefix like "manifests/model-name/tp_4/rank_0/float16"
+        """
+        return f"{self.manifest_prefix}/{self.model_name}/tp_{self.tp_size}/rank_{self.tp_rank}/{self.dtype}"
+    
     def _get_pointer_key(self) -> str:
-        """Get S3 key for manifest pointer."""
-        return f"{self.manifest_prefix}/current-snapshot.avro"
+        """Get S3 key for manifest pointer (scoped to instance)."""
+        return f"{self._get_instance_prefix()}/current-snapshot.avro"
     
     def _get_snapshot_key(self, snapshot_id: str) -> str:
-        """Get S3 key for snapshot."""
-        return f"{self.manifest_prefix}/{snapshot_id}.avro"
+        """Get S3 key for snapshot (scoped to instance)."""
+        return f"{self._get_instance_prefix()}/{snapshot_id}.avro"
     
     def _get_delta_key(self, delta_id: str) -> str:
-        """Get S3 key for delta file."""
-        return f"{self.manifest_prefix}/{delta_id}.avro"
+        """Get S3 key for delta file (scoped to instance)."""
+        return f"{self._get_instance_prefix()}/{delta_id}.avro"
     
     def _serialize_avro(self, schema: dict, record: dict) -> bytes:
         """Serialize a record to Avro bytes."""
