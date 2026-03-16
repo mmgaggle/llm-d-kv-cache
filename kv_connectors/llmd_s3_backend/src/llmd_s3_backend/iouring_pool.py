@@ -137,16 +137,21 @@ class HTTPConnection:
         if self.socket is None:
             raise RuntimeError("Not connected")
         
-        # Read HTTP response headers first
+        # Read HTTP response headers efficiently (in chunks, not byte-by-byte)
         headers = b""
         while b"\r\n\r\n" not in headers:
-            chunk = self.socket.recv(1)
+            chunk = self.socket.recv(4096)  # Read in 4KB chunks
             if not chunk:
                 raise RuntimeError("Connection closed while reading headers")
             headers += chunk
         
+        # Split headers from body
+        header_end = headers.find(b"\r\n\r\n") + 4
+        header_bytes = headers[:header_end]
+        body_start = headers[header_end:]
+        
         # Parse content length from headers
-        headers_str = headers.decode("utf-8", errors="ignore")
+        headers_str = header_bytes.decode("utf-8", errors="ignore")
         content_length = 0
         for line in headers_str.split("\r\n"):
             if line.lower().startswith("content-length:"):
@@ -161,8 +166,15 @@ class HTTPConnection:
         bytes_read = 0
         buffer_view = memoryview(buffer.tensor.numpy())
         
+        # First, copy any body data that came with headers
+        if body_start:
+            copy_size = min(len(body_start), content_length, size)
+            buffer_view[0:copy_size] = body_start[:copy_size]
+            bytes_read = copy_size
+        
+        # Then read remaining body data
         while bytes_read < content_length and bytes_read < size:
-            chunk_size = min(8192, content_length - bytes_read, size - bytes_read)
+            chunk_size = min(65536, content_length - bytes_read, size - bytes_read)  # 64KB chunks
             chunk = self.socket.recv(chunk_size)
             if not chunk:
                 break
@@ -211,7 +223,8 @@ class IoUringPool:
         endpoints: List[str],
         bucket: str,
         buffer_pool: PinnedBufferPool,
-        config: Optional[IoUringConfig] = None
+        config: Optional[IoUringConfig] = None,
+        use_https: bool = True
     ):
         """
         Initialize io_uring pool with multipathing support.
@@ -222,12 +235,14 @@ class IoUringPool:
             bucket: S3 bucket name
             buffer_pool: Pinned buffer pool for zero-copy
             config: Optional configuration
+            use_https: Whether to use HTTPS (default: True)
         """
         self.signer = signer
         self.endpoints = endpoints if isinstance(endpoints, list) else [endpoints]
         self.bucket = bucket
         self.buffer_pool = buffer_pool
         self.config = config or IoUringConfig()
+        self.use_https = use_https
         
         # Connection pool per endpoint
         self.connections: Dict[str, List[HTTPConnection]] = {}
@@ -239,7 +254,8 @@ class IoUringPool:
         
         # Request builder (use first endpoint for base URL)
         base_endpoint = self.endpoints[0]
-        self.request_builder = S3RequestBuilder(signer, f"https://{base_endpoint}", bucket)
+        scheme = "https" if use_https else "http"
+        self.request_builder = S3RequestBuilder(signer, f"{scheme}://{base_endpoint}", bucket)
         
         # Statistics
         self.stats = {

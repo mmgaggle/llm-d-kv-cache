@@ -123,7 +123,7 @@ class S3SigV4Signer:
         ).hexdigest()
         
         # Step 4: Add authorization header
-        signed_headers = ";".join(sorted(headers.keys()))
+        signed_headers = ";".join(sorted(k.lower() for k in headers.keys()))
         authorization_header = (
             f"AWS4-HMAC-SHA256 "
             f"Credential={self.access_key}/{credential_scope}, "
