@@ -254,6 +254,25 @@ aws s3api put-bucket-lifecycle-configuration \
   --lifecycle-configuration file://lifecycle.json
 ```
 
+## Documentation
+
+Comprehensive documentation is available in the [`docs/`](./docs) directory:
+
+### Core Documentation
+- **[Testing Guide](./docs/TESTING.md)** - How to run tests, test structure, and CI/CD integration
+- **[Presence Cache](./docs/PRESENCE_CACHE.md)** - Distributed cache for tracking KV cache block locations
+
+### io_uring Zero-Copy I/O (Experimental)
+- **[io_uring Design](./docs/IOURING_DESIGN.md)** - Architecture and design for zero-copy S3 transfers
+- **[io_uring Development](./docs/IOURING_DEVELOPMENT.md)** - Development environment setup with Podman and Ceph
+- **[Multipathing Analysis](./docs/MULTIPATHING_ANALYSIS.md)** - S3 multipathing for improved throughput
+
+### Platform-Specific Notes
+- **[macOS Testing Limitations](./docs/MACOS_TESTING_LIMITATIONS.md)** - Known limitations when testing on macOS with Podman
+
+### Deployment
+- **[Kubernetes Deployment](./docs/deployment/)** - Example Kubernetes manifests for production deployment
+
 ## License
 
 Apache License 2.0 - See LICENSE file for details.
