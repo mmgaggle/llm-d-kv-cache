@@ -39,6 +39,7 @@ pip install -e .
 
 ### Connector Parameters
 
+#### Core Parameters
 - `s3_bucket`: S3 bucket name (required)
 - `s3_prefix`: S3 key prefix (default: "kv-cache")
 - `s3_region`: AWS region (default: from env or "us-east-1")
@@ -48,6 +49,19 @@ pip install -e .
 - `block_size`: Number of GPU blocks grouped into each S3 object
 - `threads_per_gpu`: Number of I/O threads per GPU
 - `max_staging_memory_gb`: Total staging memory limit in GB
+
+#### I/O Driver Selection
+- `io_driver`: I/O backend driver (default: "auto")
+  - `"auto"` (recommended): Automatically selects the best available driver
+  - `"crt"`: AWS CRT-based S3 client (default fallback, always available)
+  - `"io_uring"`: Experimental zero-copy I/O using Linux io_uring (Linux 5.1+ only)
+  - `"cuobject"`: Reserved for future GPU-direct storage with RDMA (not yet implemented)
+
+#### io_uring Configuration (when io_driver="io_uring" or auto-selected)
+- `iouring_queue_depth`: io_uring submission queue depth (default: 1024)
+- `iouring_num_workers`: Number of io_uring worker threads (default: 16)
+- `pinned_buffer_size_mb`: Size of each pinned buffer in MB (default: 128)
+- `pinned_buffer_pool_size`: Number of pinned buffers in pool (default: 64)
 
 ### AWS Credentials
 

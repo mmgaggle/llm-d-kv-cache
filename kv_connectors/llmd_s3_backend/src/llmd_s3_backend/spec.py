@@ -72,12 +72,22 @@ class S3OffloadingSpec(OffloadingSpec):
         self.compaction_threshold = int(self.extra_config.get("compaction_threshold", 100))
         self.compaction_interval_hours = int(self.extra_config.get("compaction_interval_hours", 24))
         
-        # io_uring configuration (optional, Linux only)
-        self.enable_iouring = self.extra_config.get("enable_iouring", False)
+        # I/O driver selection
+        self.io_driver = self.extra_config.get("io_driver", "auto")
+        if self.io_driver not in ("auto", "crt", "io_uring", "cuobject"):
+            raise ValueError(
+                f"Invalid io_driver '{self.io_driver}'. "
+                f"Must be one of: auto, crt, io_uring, cuobject"
+            )
+        
+        # io_uring configuration (used when io_driver is 'io_uring' or auto-selected)
         self.iouring_queue_depth = int(self.extra_config.get("iouring_queue_depth", 1024))
         self.iouring_num_workers = int(self.extra_config.get("iouring_num_workers", 16))
         self.pinned_buffer_size_mb = int(self.extra_config.get("pinned_buffer_size_mb", 128))
         self.pinned_buffer_pool_size = int(self.extra_config.get("pinned_buffer_pool_size", 64))
+        
+        # Resolve io_driver if set to 'auto'
+        self.resolved_io_driver = self._select_io_driver()
 
         self.gpu_blocks_per_file = int(
             self.offloaded_block_size / self.gpu_block_size
@@ -88,6 +98,52 @@ class S3OffloadingSpec(OffloadingSpec):
 
         self._gpu_to_s3: Optional[OffloadingHandler] = None
         self._s3_to_gpu: Optional[OffloadingHandler] = None
+    def _select_io_driver(self) -> str:
+        """
+        Select the I/O driver based on the io_driver configuration.
+        
+        Auto-selection logic:
+        1. cuobject: If available (future implementation)
+        2. io_uring: If kernel supports it (Linux 5.1+)
+        3. crt: Fallback (always available)
+        
+        Returns:
+            str: The selected driver name ('crt', 'io_uring', or 'cuobject')
+        """
+        if self.io_driver != "auto":
+            # User explicitly specified a driver
+            if self.io_driver == "cuobject":
+                raise NotImplementedError(
+                    "cuobject driver is not yet implemented. "
+                    "This will enable GPU-direct storage with RDMA in the future."
+                )
+            return self.io_driver
+        
+        # Auto-selection logic
+        # TODO: Check for cuobject support when implemented
+        
+        # Check for io_uring support
+        try:
+            import platform
+            if platform.system() == "Linux":
+                # Try to import io_uring modules to check availability
+                from llmd_s3_backend.iouring_ops import IoUringContext
+                
+                # Create a temporary context to check kernel support
+                try:
+                    ctx = IoUringContext(queue_depth=2)
+                    ctx.close()
+                    return "io_uring"
+                except Exception:
+                    # io_uring not available, fall back to crt
+                    pass
+        except ImportError:
+            # io_uring modules not available
+            pass
+        
+        # Fallback to CRT (always available)
+        return "crt"
+
 
     def get_manager(self) -> OffloadingManager:
         if not self._manager:
@@ -150,8 +206,8 @@ class S3OffloadingSpec(OffloadingSpec):
                 addressing_style=self.s3_addressing_style,
                 profile_name=self.s3_profile_name,
                 attn_backends=attn_backends,
-                # io_uring configuration
-                enable_iouring=self.enable_iouring,
+                # I/O driver configuration
+                io_driver=self.resolved_io_driver,
                 iouring_queue_depth=self.iouring_queue_depth,
                 iouring_num_workers=self.iouring_num_workers,
                 pinned_buffer_size_mb=self.pinned_buffer_size_mb,

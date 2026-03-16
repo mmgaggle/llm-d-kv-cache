@@ -331,7 +331,7 @@ class S3GPUOffloadingHandler(S3OffloadingHandler):
         profile_name: Optional[str] = None,
         threads_per_gpu: Optional[int] = None,
         max_staging_memory_gb: float = DEFAULT_MAX_STAGING_MEMORY_GB,
-        enable_iouring: bool = False,
+        io_driver: str = "crt",
         iouring_queue_depth: int = 1024,
         iouring_num_workers: int = 16,
         pinned_buffer_size_mb: int = 128,
@@ -356,18 +356,20 @@ class S3GPUOffloadingHandler(S3OffloadingHandler):
 
         self.dst_tensors = list(kv_caches.values())
         
-        # Initialize io_uring components if enabled
-        self.enable_iouring = enable_iouring and IOURING_AVAILABLE
+        # Initialize io_uring components based on io_driver selection
+        self.io_driver = io_driver
+        self.enable_iouring = (io_driver == "io_uring") and IOURING_AVAILABLE
         self.iouring_pool = None
         self.pinned_buffer_pool = None
         
-        if self.enable_iouring:
+        if io_driver == "io_uring":
             if not IOURING_AVAILABLE:
                 logger.warning(
-                    "io_uring requested but not available (Linux only). "
+                    "io_uring driver requested but not available (Linux only). "
                     "Falling back to CRT client."
                 )
                 self.enable_iouring = False
+                self.io_driver = "crt"
             else:
                 try:
                     # Parse endpoint URLs for multipathing
@@ -431,6 +433,7 @@ class S3GPUOffloadingHandler(S3OffloadingHandler):
                 except Exception as e:
                     logger.error(f"Failed to initialize io_uring: {e}. Falling back to CRT.")
                     self.enable_iouring = False
+                    self.io_driver = "crt"
                     self.iouring_pool = None
                     self.pinned_buffer_pool = None
 
@@ -438,7 +441,7 @@ class S3GPUOffloadingHandler(S3OffloadingHandler):
             f"S3GPUOffloadingHandler: tp_rank={self.tp_rank}, "
             f"threads_per_gpu={self.threads_per_gpu}, "
             f"bucket={bucket}, base_key={self.base_key}, "
-            f"iouring={'enabled' if self.enable_iouring else 'disabled'}"
+            f"io_driver={self.io_driver}"
         )
 
     def _get_blocks_from_s3(
