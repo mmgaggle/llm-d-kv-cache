@@ -215,11 +215,18 @@ class TestIoUringLiveIntegration:
         """Test io_uring zero-copy performance vs boto3."""
         import time
         
-        # Create larger test data (10MB)
+        # Create test data (10MB)
+        # NOTE: Larger objects (64MB+) show performance degradation in the current prototype
+        # because we're not using true kernel zero-copy yet. The prototype copies data through
+        # userspace, which becomes a bottleneck for large transfers. With IORING_OP_READ_FIXED
+        # and true zero-copy, we expect 1.5-2.7x speedup even for 64MB objects.
+        # For now, we test with 10MB to validate the io_uring infrastructure works correctly.
         test_data = np.random.rand(1000, 1280).astype(np.float32)
         buffer = io.BytesIO()
         np.save(buffer, test_data)
         test_bytes = buffer.getvalue()
+        
+        print(f"\nTest object size: {len(test_bytes) / (1024*1024):.1f} MB")
         
         key = "test/perf_data.npy"
         s3_client.put_object(
