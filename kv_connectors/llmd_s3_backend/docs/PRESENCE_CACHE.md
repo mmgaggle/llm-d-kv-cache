@@ -48,6 +48,350 @@ With presence cache:
                                 └─────────────────────┘
 ```
 
+## S3 Bucket Structure
+
+Here's what the complete S3 bucket looks like with manifests, deltas, and cache blocks:
+
+```
+s3://my-vllm-bucket/
+│
+├── manifests/                                    # Manifest root directory
+│   │
+│   ├── llama3-70b/                              # Model: Llama3-70B
+│   │   └── tp_8/                                # Tensor Parallelism: 8
+│   │       ├── rank_0/                          # Rank 0
+│   │       │   └── float16/                     # Data type: float16
+│   │       │       ├── current-snapshot.avro    # ← POINTER FILE (points to active snapshot + deltas)
+│   │       │       ├── snapshot-1710512400.avro # Base snapshot (1M blocks)
+│   │       │       ├── snapshot-1710598800.avro # New snapshot after compaction
+│   │       │       ├── delta-1710512700.avro    # Delta 1 (100 ADD/DELETE ops)
+│   │       │       ├── delta-1710512800.avro    # Delta 2 (150 ADD/DELETE ops)
+│   │       │       ├── delta-1710512900.avro    # Delta 3 (200 ADD/DELETE ops)
+│   │       │       └── delta-1710513000.avro    # Delta 4 (50 ADD/DELETE ops)
+│   │       │
+│   │       ├── rank_1/                          # Rank 1 (separate manifest)
+│   │       │   └── float16/
+│   │       │       ├── current-snapshot.avro
+│   │       │       ├── snapshot-1710512400.avro
+│   │       │       └── delta-1710512700.avro
+│   │       │
+│   │       └── rank_2/                          # Rank 2 (separate manifest)
+│   │           └── float16/
+│   │               └── ...
+│   │
+│   └── qwen3-32b/                               # Different model
+│       └── tp_4/                                # Different TP size
+│           └── rank_0/
+│               └── bfloat16/                    # Different dtype
+│                   ├── current-snapshot.avro
+│                   ├── snapshot-1710515000.avro
+│                   └── delta-1710515100.avro
+│
+└── kv-cache/                                    # Actual KV cache blocks
+    ├── llama3-70b/
+    │   └── tp_8/
+    │       └── rank_0/
+    │           └── float16/
+    │               ├── 74f/                     # Hash-based hierarchy
+    │               │   └── 81/
+    │               │       └── 74f81fe167d99b4c.bin  # Cache block (512 KB)
+    │               ├── 750/
+    │               │   └── a1/
+    │               │       └── 750a1fe167d99b4e.bin
+    │               └── ...                      # 1M+ cache block files
+    │
+    └── qwen3-32b/
+        └── tp_4/
+            └── rank_0/
+                └── bfloat16/
+                    └── ...                      # Separate cache blocks
+```
+
+### File Relationships
+
+**1. Pointer File** (`current-snapshot.avro`)
+```json
+{
+  "current_snapshot": "snapshot-1710512400",
+  "delta_files": [
+    "delta-1710512700",
+    "delta-1710512800",
+    "delta-1710512900",
+    "delta-1710513000"
+  ],
+  "last_compaction": "2024-03-15T10:00:00Z",
+  "version": 5
+}
+```
+- **Purpose**: Points to the active snapshot and all delta files
+- **Updated**: Every time a new delta is written (using conditional PUT with ETag)
+- **Size**: ~1 KB
+
+**2. Snapshot File** (`snapshot-1710512400.avro`)
+```json
+{
+  "snapshot_id": "snapshot-1710512400",
+  "timestamp": "2024-03-15T10:00:00Z",
+  "model": "llama3-70b",
+  "tp_size": 8,
+  "tp_rank": 0,
+  "dtype": "float16",
+  "block_count": 1000000,
+  "blocks": [
+    {
+      "block_hash": "74f81fe167d99b4c",
+      "s3_key": "kv-cache/llama3-70b/tp_8/rank_0/float16/74f/81/74f81fe167d99b4c.bin",
+      "size_bytes": 524288,
+      "created_at": "2024-03-15T09:30:00Z"
+    },
+    // ... 999,999 more blocks
+  ]
+}
+```
+- **Purpose**: Base state containing all blocks at a point in time
+- **Created**: During compaction (merges snapshot + all deltas)
+- **Size**: ~10-15 MB (Avro compressed) for 1M blocks
+
+**3. Delta Files** (`delta-1710512700.avro`)
+```json
+{
+  "delta_id": "delta-1710512700",
+  "base_snapshot": "snapshot-1710512400",
+  "timestamp": "2024-03-15T10:05:00Z",
+  "operations": [
+    {
+      "type": "ADD",
+      "block_hash": "750a1fe167d99b4e",
+      "s3_key": "kv-cache/llama3-70b/tp_8/rank_0/float16/750/a1/750a1fe167d99b4e.bin",
+      "size_bytes": 524288,
+      "created_at": "2024-03-15T10:05:00Z"
+    },
+    {
+      "type": "DELETE",
+      "block_hash": "74f81fe167d99b4c"
+    },
+    // ... more operations
+  ]
+}
+```
+- **Purpose**: Incremental changes since last snapshot (MOR - Merge-On-Read)
+- **Created**: Batched writes (every 1000 ops or 10 seconds)
+- **Size**: ~100 KB per delta (for 1000 operations)
+
+### Read Path (Loading Manifest)
+
+```
+1. Read pointer file
+   └─> current-snapshot.avro
+       ├─ current_snapshot: "snapshot-1710512400"
+       └─ delta_files: ["delta-1710512700", "delta-1710512800", ...]
+
+2. Read snapshot file
+   └─> snapshot-1710512400.avro
+       └─ Load 1,000,000 blocks into presence cache
+
+3. Apply delta files (in order)
+   ├─> delta-1710512700.avro (100 ops: 80 ADD, 20 DELETE)
+   ├─> delta-1710512800.avro (150 ops: 120 ADD, 30 DELETE)
+   ├─> delta-1710512900.avro (200 ops: 180 ADD, 20 DELETE)
+   └─> delta-1710513000.avro (50 ops: 40 ADD, 10 DELETE)
+
+4. Final presence cache state
+   └─> 1,000,000 + 420 - 80 = 1,000,340 blocks
+```
+
+### Write Path (Adding Blocks)
+
+**Important**: Delta files are **batched** - one delta file per 1000 blocks (or 10 seconds), NOT one per block!
+
+```
+Timeline of writing 2500 blocks:
+
+T=0s: Block 1 written
+  1. Store to S3: kv-cache/.../block001.bin
+  2. Update cache: presence_cache.add("block001")
+  3. Queue op: delta_queue.put({"type": "ADD", "block_hash": "block001"})
+  
+T=1s: Blocks 2-999 written
+  └─> Same process, operations queued
+
+T=2s: Block 1000 written
+  └─> Batch threshold reached!
+  
+  4. Background thread creates delta file
+     └─> manifests/.../delta-1710513100.avro (contains 1000 ADD operations)
+  
+  5. Update pointer file (conditional PUT with ETag)
+     Before:
+     {
+       "current_snapshot": "snapshot-1710512400",
+       "delta_files": [],
+       "version": 1
+     }
+     
+     After:
+     {
+       "current_snapshot": "snapshot-1710512400",
+       "delta_files": ["delta-1710513100"],  ← Added
+       "version": 2  ← Incremented
+     }
+
+T=3s: Blocks 1001-1999 written
+  └─> Operations queued
+
+T=4s: Block 2000 written
+  └─> Second batch threshold reached!
+  
+  6. Create second delta file
+     └─> manifests/.../delta-1710513200.avro (1000 more operations)
+  
+  7. Update pointer file again
+     {
+       "current_snapshot": "snapshot-1710512400",
+       "delta_files": [
+         "delta-1710513100",
+         "delta-1710513200"  ← Added
+       ],
+       "version": 3
+     }
+
+T=5s: Blocks 2001-2500 written (only 500 blocks)
+  └─> Operations queued, waiting...
+
+T=15s: 10-second timeout reached
+  └─> Even though only 500 ops, write delta anyway
+  
+  8. Create third delta file
+     └─> manifests/.../delta-1710513300.avro (500 operations)
+  
+  9. Update pointer file
+     {
+       "current_snapshot": "snapshot-1710512400",
+       "delta_files": [
+         "delta-1710513100",
+         "delta-1710513200",
+         "delta-1710513300"  ← Added
+       ],
+       "version": 4
+     }
+```
+
+**Result**: 2500 blocks written, but only **3 delta files** and **3 pointer updates** (not 2500!).
+
+**Batching Benefits:**
+- ✅ Reduces S3 API calls (3 writes instead of 2500)
+- ✅ Reduces pointer file contention (3 updates instead of 2500)
+- ✅ More efficient Avro compression
+- ✅ Better performance under high write load
+
+## Immutability and Concurrency Control
+
+The manifest system follows an **immutable data structure** pattern with a single mutable pointer:
+
+### Immutable Files (Write-Once, Never Modified)
+
+✅ **Snapshot files**: `snapshot-{timestamp}.avro`
+- Named with unique timestamp
+- Never modified after creation
+- Can be safely read by multiple instances
+- Old snapshots can be deleted after grace period
+
+✅ **Delta files**: `delta-{timestamp}.avro`
+- Named with unique timestamp
+- Never modified after creation
+- Append-only from system perspective
+- Can be safely read by multiple instances
+
+✅ **Cache blocks**: `{hash}.bin`
+- Named with content hash
+- Immutable (content-addressed storage)
+- No collision risk (hash uniqueness)
+
+### Mutable File (Single Point of Coordination)
+
+⚠️ **Pointer file**: `current-snapshot.avro`
+- **ONLY** file that gets updated
+- Uses **conditional PUT** with ETag for concurrency control
+- Atomic updates prevent race conditions
+- Optimistic concurrency control (retry on conflict)
+
+### Concurrency Control Example
+
+```
+Instance A and Instance B both want to add a delta:
+
+T=0: Both read pointer (version=5, ETag="abc123")
+     {
+       "current_snapshot": "snapshot-1710512400",
+       "delta_files": ["delta-1", "delta-2", "delta-3"],
+       "version": 5
+     }
+
+T=1: Instance A writes delta-4.avro (immutable, no conflict)
+     Instance B writes delta-5.avro (immutable, no conflict)
+
+T=2: Instance A tries to update pointer
+     PUT current-snapshot.avro
+     If-Match: "abc123"  ← Must match current ETag
+     Body: {
+       "delta_files": ["delta-1", "delta-2", "delta-3", "delta-4"],
+       "version": 6
+     }
+     ✅ SUCCESS (ETag matched, pointer updated, new ETag="def456")
+
+T=3: Instance B tries to update pointer
+     PUT current-snapshot.avro
+     If-Match: "abc123"  ← Stale ETag!
+     Body: {
+       "delta_files": ["delta-1", "delta-2", "delta-3", "delta-5"],
+       "version": 6
+     }
+     ❌ FAIL (412 Precondition Failed - ETag mismatch)
+
+T=4: Instance B retries
+     - Re-reads pointer (version=6, ETag="def456")
+     - Sees delta-4 already added by Instance A
+     - Updates to add delta-5
+     PUT current-snapshot.avro
+     If-Match: "def456"  ← Current ETag
+     Body: {
+       "delta_files": ["delta-1", "delta-2", "delta-3", "delta-4", "delta-5"],
+       "version": 7
+     }
+     ✅ SUCCESS
+```
+
+### Benefits of This Design
+
+✅ **No File Locks**: Immutable files don't need locking
+✅ **High Concurrency**: Multiple instances can write deltas simultaneously
+✅ **Conflict-Free Reads**: Readers never block writers
+✅ **Automatic Retry**: Failed pointer updates retry with exponential backoff
+✅ **Eventually Consistent**: All instances converge to same state
+✅ **Collision-Free**: Timestamp-based names prevent overwrites
+
+### Compaction Process
+
+```
+Trigger: 100 delta files OR 24 hours since last compaction
+
+1. Load full state
+   ├─> Read snapshot-1710512400.avro (1M blocks)
+   └─> Apply all 100 delta files (10K operations)
+   
+2. Create new snapshot
+   └─> snapshot-1710598800.avro (1,010,000 blocks after merging)
+
+3. Update pointer (atomic operation)
+   ├─> current_snapshot: "snapshot-1710598800"
+   ├─> delta_files: []  ← Clear delta list
+   └─> version: 106
+
+4. Old files remain (for rollback/debugging)
+   ├─> snapshot-1710512400.avro (can be deleted after grace period)
+   └─> delta-*.avro files (can be deleted after grace period)
+```
+
 ## Manifest Structure
 
 All manifest files use **Apache Avro** binary format for compact storage and fast parsing. The examples below show the logical structure (as if JSON) for readability.
