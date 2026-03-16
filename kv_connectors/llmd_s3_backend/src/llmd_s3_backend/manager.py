@@ -16,11 +16,12 @@ import torch
 import threading
 import time
 from collections.abc import Iterable
-from typing import Optional, Set
+from typing import Optional
 
 from vllm.v1.core.kv_cache_utils import BlockHash
 from llmd_s3_backend.mediums import S3LoadStoreSpec
 from llmd_s3_backend.s3_client import S3ClientWrapper
+from llmd_s3_backend.lru_cache import LRUPresenceCache
 from vllm.v1.kv_offload.abstract import (
     LoadStoreSpec,
     OffloadingManager,
@@ -59,6 +60,7 @@ class S3OffloadingManager(OffloadingManager):
         manifest_prefix: str = "manifests",
         compaction_threshold: int = 100,
         compaction_interval_hours: int = 24,
+        cache_max_size: Optional[int] = 1_000_000,
     ) -> None:
         """
         Initialize S3 offloading manager.
@@ -78,6 +80,8 @@ class S3OffloadingManager(OffloadingManager):
             manifest_prefix: S3 prefix for manifest files (default: "manifests")
             compaction_threshold: Number of delta files before compaction (default: 100)
             compaction_interval_hours: Hours between compactions (default: 24)
+            cache_max_size: Maximum number of blocks in presence cache (default: 1,000,000)
+                           Set to None for unbounded cache
         """
         # Basic metadata about the model and tensor parallelism
         self.model_name = model_name
@@ -102,9 +106,9 @@ class S3OffloadingManager(OffloadingManager):
         self.base_key = f"{prefix}/{model_name}/tp_{tp_size}/rank_{tp_rank}/{dtype_str}"
 
         # Optional presence cache with manifest
-        self._presence_cache: Optional[Set[str]] = None
-        self._cache_lock = threading.Lock()
+        self._presence_cache: Optional[LRUPresenceCache] = None
         self._manifest_manager: Optional[ManifestManager] = None
+        self._cache_max_size = cache_max_size
         
         if enable_presence_cache:
             if not MANIFEST_AVAILABLE:
@@ -129,6 +133,9 @@ class S3OffloadingManager(OffloadingManager):
     ):
         """Initialize presence cache with manifest support."""
         try:
+            # Initialize LRU cache
+            self._presence_cache = LRUPresenceCache(max_size=self._cache_max_size)
+            
             # Initialize manifest manager
             self._manifest_manager = ManifestManager(
                 s3_client=self.s3_client,
@@ -143,9 +150,13 @@ class S3OffloadingManager(OffloadingManager):
             
             # Load manifest and pre-warm cache
             manifest = self._manifest_manager.load_manifest()
-            self._presence_cache = set(manifest.keys())
+            self._presence_cache.update(manifest.keys())
             
-            logger.info(f"Pre-warmed presence cache with {len(self._presence_cache)} blocks")
+            stats = self._presence_cache.get_stats()
+            logger.info(
+                f"Pre-warmed presence cache with {stats['size']} blocks "
+                f"(max_size={stats['max_size']})"
+            )
             
             # Start background refresh thread
             self._refresh_thread = threading.Thread(
@@ -156,7 +167,7 @@ class S3OffloadingManager(OffloadingManager):
             
         except Exception as e:
             logger.error(f"Failed to initialize presence cache: {e}")
-            self._presence_cache = set()
+            self._presence_cache = LRUPresenceCache(max_size=self._cache_max_size)
     
     def _refresh_cache_loop(self):
         """Periodically refresh presence cache from manifest."""
@@ -164,13 +175,18 @@ class S3OffloadingManager(OffloadingManager):
             try:
                 time.sleep(300)  # Refresh every 5 minutes
                 
-                if self._manifest_manager:
+                if self._manifest_manager and self._presence_cache:
                     manifest = self._manifest_manager.load_manifest()
-                    with self._cache_lock:
-                        new_blocks = set(manifest.keys()) - self._presence_cache
+                    current_keys = self._presence_cache.get_keys()
+                    new_blocks = set(manifest.keys()) - current_keys
+                    if new_blocks:
                         self._presence_cache.update(new_blocks)
-                        if new_blocks:
-                            logger.info(f"Refreshed cache, added {len(new_blocks)} new blocks")
+                        stats = self._presence_cache.get_stats()
+                        logger.info(
+                            f"Refreshed cache: added {len(new_blocks)} new blocks, "
+                            f"size={stats['size']}, evictions={stats['evictions']}, "
+                            f"hit_rate={stats['hit_rate']:.2%}"
+                        )
                             
             except Exception as e:
                 logger.error(f"Error refreshing cache: {e}")
@@ -201,10 +217,9 @@ class S3OffloadingManager(OffloadingManager):
             
             # Check presence cache first if enabled
             if self._presence_cache is not None:
-                with self._cache_lock:
-                    if block_hash_str in self._presence_cache:
-                        hit_count += 1
-                        continue
+                if block_hash_str in self._presence_cache:
+                    hit_count += 1
+                    continue
             
             # Not in cache or cache disabled - check S3
             s3_key = self._get_s3_key(block_hash)
@@ -213,8 +228,7 @@ class S3OffloadingManager(OffloadingManager):
             
             # Found in S3 - add to cache if enabled
             if self._presence_cache is not None:
-                with self._cache_lock:
-                    self._presence_cache.add(block_hash_str)
+                self._presence_cache.add(block_hash_str)
             
             hit_count += 1
         return hit_count
@@ -278,8 +292,7 @@ class S3OffloadingManager(OffloadingManager):
                 str(bh) if not isinstance(bh, str) else bh
                 for bh in block_hashes_list
             ]
-            with self._cache_lock:
-                self._presence_cache.update(block_hash_strs)
+            self._presence_cache.update(block_hash_strs)
         
         # Update manifest if enabled
         if self._manifest_manager is not None:

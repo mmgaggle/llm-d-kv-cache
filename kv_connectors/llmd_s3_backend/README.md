@@ -63,6 +63,15 @@ pip install -e .
 - `pinned_buffer_size_mb`: Size of each pinned buffer in MB (default: 128)
 - `pinned_buffer_pool_size`: Number of pinned buffers in pool (default: 64)
 
+#### Presence Cache Configuration (optional)
+- `enable_presence_cache`: Enable in-memory presence cache with manifest (default: false)
+- `manifest_prefix`: S3 prefix for manifest files (default: "manifests")
+- `compaction_threshold`: Number of delta files before compaction (default: 100)
+- `compaction_interval_hours`: Hours between compactions (default: 24)
+- `cache_max_size`: Maximum number of blocks in LRU cache (default: 1,000,000)
+  - Set to `null` for unbounded cache (not recommended for production)
+  - Memory usage: ~8 bytes per block (1M blocks ≈ 8 MB RAM)
+
 ### AWS Credentials
 
 The connector supports multiple authentication methods (in order of precedence):

@@ -450,9 +450,17 @@ python -c "from llmd_s3_backend.manifest import ManifestManager"
 **Cause:** Too many blocks in cache
 
 **Solution:**
-- Reduce cache scope (separate buckets per model)
-- Implement LRU eviction
-- Use Bloom filter instead of set
+- Configure `cache_max_size` to limit memory usage
+- Default is 1M blocks (~8 MB RAM)
+- Set lower for memory-constrained environments
+- Set to `null` for unbounded cache (original behavior)
+
+**Example:**
+```json
+{
+  "cache_max_size": 500000  // Limit to 500K blocks (~4 MB)
+}
+```
 
 ### Stale Cache
 
@@ -465,6 +473,66 @@ python -c "from llmd_s3_backend.manifest import ManifestManager"
 - Verify S3 connectivity
 - Manually trigger refresh
 
+## LRU Eviction Policy
+
+The presence cache now implements **LRU (Least Recently Used) eviction** to prevent unbounded memory growth:
+
+### How It Works
+
+- Cache has configurable `cache_max_size` (default: 1,000,000 blocks)
+- When cache is full, least recently accessed blocks are evicted
+- Access order is updated on every lookup
+- Thread-safe implementation using OrderedDict
+
+### Configuration
+
+```json
+{
+  "enable_presence_cache": true,
+  "cache_max_size": 1000000  // Max blocks (default: 1M)
+}
+```
+
+Set `cache_max_size` to `null` for unbounded cache (not recommended for production).
+
+### Memory Usage
+
+| cache_max_size | Memory Usage | Use Case |
+|----------------|--------------|----------|
+| 100,000 | ~0.8 MB | Small deployments |
+| 1,000,000 | ~8 MB | Default (recommended) |
+| 10,000,000 | ~80 MB | Large deployments |
+| null | Unbounded | Testing only |
+
+### Statistics
+
+The cache tracks performance metrics:
+
+```python
+stats = cache.get_stats()
+# {
+#   "size": 950000,
+#   "max_size": 1000000,
+#   "hits": 5000000,
+#   "misses": 50000,
+#   "evictions": 100000,
+#   "hit_rate": 0.99
+# }
+```
+
+These stats are logged during cache refresh:
+```
+Refreshed cache: added 1000 new blocks, size=950000, evictions=100000, hit_rate=99.00%
+```
+
+### Benefits
+
+✅ **Bounded memory** - Prevents OOM in long-running deployments
+✅ **Automatic eviction** - No manual cache management needed
+✅ **High hit rate** - LRU keeps frequently accessed blocks
+✅ **Thread-safe** - Safe for concurrent access
+✅ **Observable** - Built-in statistics tracking
+
 ## Future Enhancements
 
 Potential improvements:
@@ -472,8 +540,8 @@ Potential improvements:
 - Distributed cache coordination (Redis/etcd)
 - Incremental manifest loading
 - Cache warming strategies
-- LRU eviction policies
-- Metrics and observability
+- Adaptive cache sizing based on workload
+- Metrics export (Prometheus/OpenTelemetry)
 
 ## Summary
 

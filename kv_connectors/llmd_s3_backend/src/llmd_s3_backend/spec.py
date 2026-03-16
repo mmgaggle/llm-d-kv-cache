@@ -72,6 +72,10 @@ class S3OffloadingSpec(OffloadingSpec):
         self.compaction_threshold = int(self.extra_config.get("compaction_threshold", 100))
         self.compaction_interval_hours = int(self.extra_config.get("compaction_interval_hours", 24))
         
+        # LRU cache configuration
+        cache_max_size = self.extra_config.get("cache_max_size", 1_000_000)
+        self.cache_max_size = None if cache_max_size is None else int(cache_max_size)
+        
         # I/O driver selection
         self.io_driver = self.extra_config.get("io_driver", "auto")
         if self.io_driver not in ("auto", "crt", "io_uring", "cuobject"):
@@ -164,6 +168,7 @@ class S3OffloadingSpec(OffloadingSpec):
                 manifest_prefix=self.manifest_prefix,
                 compaction_threshold=self.compaction_threshold,
                 compaction_interval_hours=self.compaction_interval_hours,
+                cache_max_size=self.cache_max_size,
             )
         return self._manager
 
