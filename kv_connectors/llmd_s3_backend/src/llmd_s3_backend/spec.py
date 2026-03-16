@@ -21,7 +21,7 @@ from vllm.v1.kv_offload.abstract import LoadStoreSpec, OffloadingManager
 from vllm.v1.kv_offload.mediums import GPULoadStoreSpec
 from llmd_s3_backend.manager import S3OffloadingManager
 from vllm.v1.kv_offload.spec import OffloadingSpec
-from vllm.attention.backends.abstract import AttentionBackend
+from vllm.v1.attention.backend import AttentionBackend
 
 from llmd_s3_backend.worker import (
     GPUS3OffloadingHandler,
@@ -39,8 +39,8 @@ class S3OffloadingSpec(OffloadingSpec):
     OffloadingSpec for S3 backend.
     """
 
-    def __init__(self, vllm_config: VllmConfig):
-        super().__init__(vllm_config)
+    def __init__(self, vllm_config: VllmConfig, kv_cache_config=None):
+        super().__init__(vllm_config, kv_cache_config)
 
         self._num_blocks: Optional[int] = None
         self._manager: Optional[OffloadingManager] = None

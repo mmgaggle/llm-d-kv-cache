@@ -18,7 +18,7 @@ import torch
 import threading
 from concurrent.futures import ThreadPoolExecutor, Future
 from typing import Optional, Dict, List, Tuple
-from vllm.attention.backends.abstract import AttentionBackend
+from vllm.v1.attention.backend import AttentionBackend
 from vllm.logger import init_logger
 from vllm.v1.kv_offload.worker.worker import (
     OffloadingHandler,
@@ -591,3 +591,25 @@ class S3GPUOffloadingHandler(S3OffloadingHandler):
         return True
 
 # Made with Bob
+
+    def wait(self, job_id: int) -> bool:
+        """Wait for a specific job to complete."""
+        with self.lock:
+            future = self.pending_futures.get(job_id)
+        
+        if future is None:
+            return True
+        
+        try:
+            future.result(timeout=30.0)  # Wait up to 30 seconds
+            return True
+        except Exception as e:
+            logger.error(f"Job {job_id} failed: {e}")
+            return False
+    
+    def get_finished(self) -> List[Tuple[int, bool]]:
+        """Get list of completed jobs and their success status."""
+        with self.lock:
+            finished = list(self.completed_jobs)
+            self.completed_jobs.clear()
+            return finished

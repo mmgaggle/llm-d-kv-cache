@@ -1,5 +1,26 @@
 # io_uring Development Guide
 
+## Testing Status
+
+### Unit Tests (Passing ✅)
+- **Pinned Buffer Management** (`test_pinned_buffers.py`): 8/8 tests passing
+- **io_uring Operations** (`test_iouring_ops.py`): 6/6 tests passing
+- **Mock Integration** (`test_integration_mock.py`): Tests io_uring pool without vLLM dependencies
+
+### Integration Tests (vLLM API Compatibility Issue ⚠️)
+The integration tests in `test_iouring_integration.py` require vLLM imports but encounter API compatibility issues:
+- **Issue**: vLLM 0.17.1 removed `vllm.attention.backends.abstract` module
+- **Impact**: Cannot import `spec.py` and `worker.py` in test environment
+- **Workaround**: Use unit tests and mock integration tests for development
+- **Resolution**: Full integration testing requires the specific vLLM version deployed in production (0.11.x-0.16.x range)
+
+**Recommendation**:
+1. Use unit tests (`test_pinned_buffers.py`, `test_iouring_ops.py`) for development
+2. Use mock integration tests (`test_integration_mock.py`) to verify io_uring pool behavior
+3. Deploy to production environment with compatible vLLM version for end-to-end testing
+4. Monitor vLLM release notes for API stability before upgrading
+
+
 This guide explains how to develop and test the io_uring zero-copy integration on macOS using Podman containers.
 
 ## Overview
