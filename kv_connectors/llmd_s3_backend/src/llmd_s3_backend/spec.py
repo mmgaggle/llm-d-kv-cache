@@ -71,6 +71,13 @@ class S3OffloadingSpec(OffloadingSpec):
         self.manifest_prefix = self.extra_config.get("manifest_prefix", "manifests")
         self.compaction_threshold = int(self.extra_config.get("compaction_threshold", 100))
         self.compaction_interval_hours = int(self.extra_config.get("compaction_interval_hours", 24))
+        
+        # io_uring configuration (optional, Linux only)
+        self.enable_iouring = self.extra_config.get("enable_iouring", False)
+        self.iouring_queue_depth = int(self.extra_config.get("iouring_queue_depth", 1024))
+        self.iouring_num_workers = int(self.extra_config.get("iouring_num_workers", 16))
+        self.pinned_buffer_size_mb = int(self.extra_config.get("pinned_buffer_size_mb", 128))
+        self.pinned_buffer_pool_size = int(self.extra_config.get("pinned_buffer_pool_size", 64))
 
         self.gpu_blocks_per_file = int(
             self.offloaded_block_size / self.gpu_block_size
@@ -143,6 +150,12 @@ class S3OffloadingSpec(OffloadingSpec):
                 addressing_style=self.s3_addressing_style,
                 profile_name=self.s3_profile_name,
                 attn_backends=attn_backends,
+                # io_uring configuration
+                enable_iouring=self.enable_iouring,
+                iouring_queue_depth=self.iouring_queue_depth,
+                iouring_num_workers=self.iouring_num_workers,
+                pinned_buffer_size_mb=self.pinned_buffer_size_mb,
+                pinned_buffer_pool_size=self.pinned_buffer_pool_size,
             )
 
         yield GPULoadStoreSpec, S3LoadStoreSpec, self._gpu_to_s3

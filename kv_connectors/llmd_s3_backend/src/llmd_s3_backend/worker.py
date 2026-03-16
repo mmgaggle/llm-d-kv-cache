@@ -27,6 +27,19 @@ from vllm.v1.kv_offload.worker.worker import (
 )
 from llmd_s3_backend.s3_client import S3ClientWrapper
 
+# Import io_uring components (optional, only available on Linux)
+try:
+    from llmd_s3_backend.iouring_pool import IoUringPool, IoUringConfig
+    from llmd_s3_backend.pinned_buffers import PinnedBufferPool
+    from llmd_s3_backend.s3_auth import S3SigV4Signer
+    IOURING_AVAILABLE = True
+except ImportError:
+    IOURING_AVAILABLE = False
+    IoUringPool = None
+    PinnedBufferPool = None
+    IoUringConfig = None
+    S3SigV4Signer = None
+
 logger = init_logger(__name__)
 
 # ----------------------------------------------------------------------
@@ -318,6 +331,11 @@ class S3GPUOffloadingHandler(S3OffloadingHandler):
         profile_name: Optional[str] = None,
         threads_per_gpu: Optional[int] = None,
         max_staging_memory_gb: float = DEFAULT_MAX_STAGING_MEMORY_GB,
+        enable_iouring: bool = False,
+        iouring_queue_depth: int = 1024,
+        iouring_num_workers: int = 16,
+        pinned_buffer_size_mb: int = 128,
+        pinned_buffer_pool_size: int = 64,
     ):
         super().__init__(
             model_name,
@@ -337,17 +355,107 @@ class S3GPUOffloadingHandler(S3OffloadingHandler):
         )
 
         self.dst_tensors = list(kv_caches.values())
+        
+        # Initialize io_uring components if enabled
+        self.enable_iouring = enable_iouring and IOURING_AVAILABLE
+        self.iouring_pool = None
+        self.pinned_buffer_pool = None
+        
+        if self.enable_iouring:
+            if not IOURING_AVAILABLE:
+                logger.warning(
+                    "io_uring requested but not available (Linux only). "
+                    "Falling back to CRT client."
+                )
+                self.enable_iouring = False
+            else:
+                try:
+                    # Parse endpoint URLs for multipathing
+                    endpoints = []
+                    if endpoint_url:
+                        # Support comma-separated endpoints for multipathing
+                        endpoints = [url.strip() for url in endpoint_url.split(',')]
+                    else:
+                        # Default to AWS S3 endpoint
+                        endpoints = [f"s3.{region or 'us-east-1'}.amazonaws.com"]
+                    
+                    # Initialize pinned buffer pool
+                    self.pinned_buffer_pool = PinnedBufferPool(
+                        buffer_size_mb=pinned_buffer_size_mb,
+                        num_buffers=pinned_buffer_pool_size,
+                    )
+                    
+                    # Create S3 signer for io_uring
+                    # Get credentials from profile or environment
+                    import boto3
+                    session = boto3.Session(profile_name=profile_name) if profile_name else boto3.Session()
+                    credentials = session.get_credentials()
+                    
+                    # Note: S3SigV4Signer doesn't support session tokens yet
+                    # For temporary credentials, we'd need to extend the signer
+                    if credentials.token:
+                        logger.warning(
+                            "io_uring path does not support temporary credentials (session tokens). "
+                            "Falling back to CRT client."
+                        )
+                        raise RuntimeError("Temporary credentials not supported")
+                    
+                    signer = S3SigV4Signer(
+                        access_key=credentials.access_key,
+                        secret_key=credentials.secret_key,
+                        region=region or "us-east-1",
+                    )
+                    
+                    # Create io_uring config
+                    config = IoUringConfig(
+                        queue_depth=iouring_queue_depth,
+                        num_workers=iouring_num_workers,
+                    )
+                    
+                    # Initialize io_uring pool
+                    self.iouring_pool = IoUringPool(
+                        signer=signer,
+                        endpoints=endpoints,
+                        bucket=bucket,
+                        buffer_pool=self.pinned_buffer_pool,
+                        config=config,
+                    )
+                    
+                    logger.info(
+                        f"S3GPUOffloadingHandler: io_uring enabled with "
+                        f"{len(endpoints)} endpoint(s), "
+                        f"queue_depth={iouring_queue_depth}, "
+                        f"workers={iouring_num_workers}, "
+                        f"buffer_pool={pinned_buffer_pool_size}x{pinned_buffer_size_mb}MB"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to initialize io_uring: {e}. Falling back to CRT.")
+                    self.enable_iouring = False
+                    self.iouring_pool = None
+                    self.pinned_buffer_pool = None
 
         logger.info(
             f"S3GPUOffloadingHandler: tp_rank={self.tp_rank}, "
             f"threads_per_gpu={self.threads_per_gpu}, "
-            f"bucket={bucket}, base_key={self.base_key}"
+            f"bucket={bucket}, base_key={self.base_key}, "
+            f"iouring={'enabled' if self.enable_iouring else 'disabled'}"
         )
 
     def _get_blocks_from_s3(
         self, job_id: int, s3_key: str, tensors: List[torch.Tensor], block_ids: List[int]
     ) -> Tuple[int, bool]:
         """Download blocks from S3 (runs in thread pool)."""
+        # Try io_uring zero-copy path first if enabled
+        if self.enable_iouring and self.iouring_pool and self.pinned_buffer_pool:
+            try:
+                return self._get_blocks_zerocopy(job_id, s3_key, tensors, block_ids)
+            except Exception as e:
+                logger.warning(
+                    f"[GET] job_id={job_id} io_uring failed: {e}. Falling back to CRT."
+                )
+                # Fall through to CRT path
+        
+        # Standard CRT path
         try:
             # Download from S3
             data = self.s3_client.get_object(s3_key)
@@ -373,7 +481,74 @@ class S3GPUOffloadingHandler(S3OffloadingHandler):
         except Exception as e:
             logger.error(f"[GET] job_id={job_id} failed: {e}")
             return (job_id, False)
+    
+    def _get_blocks_zerocopy(
+        self, job_id: int, s3_key: str, tensors: List[torch.Tensor], block_ids: List[int]
+    ) -> Tuple[int, bool]:
+        """
+        Download blocks from S3 using io_uring zero-copy path.
+        
+        This method:
+        1. Acquires a pinned buffer from the pool
+        2. Downloads directly into pinned memory (zero-copy)
+        3. Deserializes from pinned buffer
+        4. Copies to GPU tensors
+        5. Returns buffer to pool
+        """
+        pinned_buffer = None
+        try:
+            # Get pinned buffer from pool
+            pinned_buffer = self.pinned_buffer_pool.acquire(timeout=5.0)
+            
+            # Download into pinned buffer using io_uring
+            bytes_read = self.iouring_pool.get_object_zerocopy(
+                key=s3_key,
+                pinned_buffer=pinned_buffer,
+                timeout=30.0
+            )
+            
+            if bytes_read == 0:
+                raise RuntimeError("Zero bytes read from S3")
+            
+            # Deserialize from pinned buffer
+            import numpy as np
+            buffer_bytes = bytes(pinned_buffer.tensor[:bytes_read].cpu().numpy())
+            buffer = io.BytesIO(buffer_bytes)
+            loaded = np.load(buffer)
+            blocks_data = [loaded[f"arr_{i}"] for i in range(len(loaded.files))]
+            
+            # Copy to GPU tensors
+            for tensor, block_data in zip(tensors, blocks_data):
+                block_tensor = torch.from_numpy(block_data).to(
+                    device=tensor.device, dtype=tensor.dtype
+                )
+                tensor[:, block_ids, :, :, :] = block_tensor
+            
+            logger.debug(
+                f"[GET-IOURING] job_id={job_id} downloaded {bytes_read} bytes from {s3_key}"
+            )
+            return (job_id, True)
+            
+        except Exception as e:
+            logger.error(f"[GET-IOURING] job_id={job_id} failed: {e}")
+            raise
+        finally:
+            # Always return buffer to pool
+            if pinned_buffer:
+                self.pinned_buffer_pool.release(pinned_buffer)
 
+    def __del__(self):
+        """Clean up resources."""
+        # Close io_uring pool if initialized
+        if hasattr(self, "iouring_pool") and self.iouring_pool:
+            try:
+                self.iouring_pool.close()
+            except Exception as e:
+                logger.warning(f"Error closing io_uring pool: {e}")
+        
+        # Call parent cleanup
+        super().__del__()
+    
     def transfer_async(self, job_id: int, spec: TransferSpec) -> bool:
         """Launch async GET transfers from S3 to GPU tensors."""
         src_spec, dst_spec = spec
