@@ -208,23 +208,23 @@ class IoUringPool:
     def __init__(
         self,
         signer: S3SigV4Signer,
-        endpoint: str,
+        endpoints: List[str],
         bucket: str,
         buffer_pool: PinnedBufferPool,
         config: Optional[IoUringConfig] = None
     ):
         """
-        Initialize io_uring pool.
+        Initialize io_uring pool with multipathing support.
         
         Args:
             signer: S3 SigV4 signer
-            endpoint: S3 endpoint (e.g., "s3.amazonaws.com")
+            endpoints: List of S3 endpoints (e.g., ["10.0.1.5:443", "10.0.1.6:443"])
             bucket: S3 bucket name
             buffer_pool: Pinned buffer pool for zero-copy
             config: Optional configuration
         """
         self.signer = signer
-        self.endpoint = endpoint
+        self.endpoints = endpoints if isinstance(endpoints, list) else [endpoints]
         self.bucket = bucket
         self.buffer_pool = buffer_pool
         self.config = config or IoUringConfig()
@@ -233,8 +233,13 @@ class IoUringPool:
         self.connections: Dict[str, List[HTTPConnection]] = {}
         self.connection_lock = threading.Lock()
         
-        # Request builder
-        self.request_builder = S3RequestBuilder(signer, f"https://{endpoint}", bucket)
+        # Round-robin endpoint selection
+        self.current_endpoint_idx = 0
+        self.endpoint_lock = threading.Lock()
+        
+        # Request builder (use first endpoint for base URL)
+        base_endpoint = self.endpoints[0]
+        self.request_builder = S3RequestBuilder(signer, f"https://{base_endpoint}", bucket)
         
         # Statistics
         self.stats = {
@@ -246,9 +251,21 @@ class IoUringPool:
         self.stats_lock = threading.Lock()
         
         logger.info(
-            f"IoUringPool initialized: endpoint={endpoint}, "
+            f"IoUringPool initialized: endpoints={self.endpoints}, "
             f"bucket={bucket}, queue_depth={self.config.queue_depth}"
         )
+    
+    def _select_endpoint(self) -> str:
+        """
+        Select endpoint using round-robin load balancing.
+        
+        Returns:
+            Selected endpoint string
+        """
+        with self.endpoint_lock:
+            endpoint = self.endpoints[self.current_endpoint_idx]
+            self.current_endpoint_idx = (self.current_endpoint_idx + 1) % len(self.endpoints)
+            return endpoint
     
     def _get_connection(self, endpoint: str) -> HTTPConnection:
         """
@@ -320,8 +337,9 @@ class IoUringPool:
                 "GET", url, headers
             )
             
-            # Get connection
-            conn = self._get_connection(self.endpoint)
+            # Select endpoint and get connection
+            endpoint = self._select_endpoint()
+            conn = self._get_connection(endpoint)
             
             try:
                 # Ensure connected
@@ -387,8 +405,9 @@ class IoUringPool:
                 "PUT", url, headers, data
             )
             
-            # Get connection
-            conn = self._get_connection(self.endpoint)
+            # Select endpoint and get connection
+            endpoint = self._select_endpoint()
+            conn = self._get_connection(endpoint)
             
             try:
                 # Ensure connected
@@ -482,7 +501,7 @@ if __name__ == "__main__":
     
     pool = IoUringPool(
         signer=signer,
-        endpoint="s3.amazonaws.com",
+        endpoints=["s3.amazonaws.com"],
         bucket="test-bucket",
         buffer_pool=buffer_pool
     )
