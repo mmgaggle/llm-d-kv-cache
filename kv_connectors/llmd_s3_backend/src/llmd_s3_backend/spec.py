@@ -115,7 +115,9 @@ class S3OffloadingSpec(OffloadingSpec):
             if self.io_driver == "cuobject":
                 raise NotImplementedError(
                     "cuobject driver is not yet implemented. "
-                    "This will enable GPU-direct storage with RDMA in the future."
+                    "This driver will enable GPU-direct storage with RDMA, bypassing CPU for data transfers. "
+                    "For now, please use 'io_uring' (Linux only, experimental zero-copy) or 'crt' (default, stable). "
+                    "Set io_driver='auto' to automatically select the best available driver."
                 )
             return self.io_driver
         
