@@ -40,3 +40,7 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Logs
+*.log
+vllm_validation.log

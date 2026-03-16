@@ -1,0 +1,35 @@
+# Copyright 2025 The llm-d Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Dockerfile for io_uring integration testing with vLLM
+# This extends the base io_uring development image and adds vLLM
+# for running integration tests that require vLLM dependencies.
+
+FROM llmd_s3_backend_iouring-dev:latest
+
+LABEL maintainer="llm-d team"
+LABEL description="io_uring development environment with vLLM for integration testing"
+
+# Install vLLM for integration testing
+# This is a large package (~5-10 GB) so it's in a separate layer
+RUN pip install --no-cache-dir vllm
+
+# Verify installation
+RUN python3 -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
+
+# Set working directory
+WORKDIR /workspace
+
+# Default command
+CMD ["/bin/bash"]

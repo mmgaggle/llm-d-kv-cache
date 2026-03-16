@@ -39,18 +39,18 @@ Since io_uring is a Linux-specific feature (kernel 5.1+), macOS developers need 
 
 ```bash
 cd kv_connectors/llmd_s3_backend
-podman-compose -f podman-compose.iouring.yml build
+podman-compose -f docker/docker-compose.iouring.yml build
 ```
 
 ### 2. Start the Development Environment
 
 ```bash
 # Start container with interactive shell
-podman-compose -f podman-compose.iouring.yml run --rm iouring-dev
+podman-compose -f docker/docker-compose.iouring.yml run --rm iouring-dev
 
 # Or start in background
-podman-compose -f podman-compose.iouring.yml up -d
-podman-compose -f podman-compose.iouring.yml exec iouring-dev bash
+podman-compose -f docker/docker-compose.iouring.yml up -d
+podman-compose -f docker/docker-compose.iouring.yml exec iouring-dev bash
 ```
 
 ### 3. Run Tests Inside Container
@@ -65,7 +65,7 @@ python -m pytest tests/test_iouring_pool.py -v  # When implemented
 
 ```bash
 # Start Ceph RGW alongside dev container
-podman-compose -f podman-compose.iouring.yml up -d ceph-rgw
+podman-compose -f docker/docker-compose.iouring.yml up -d ceph-rgw
 
 # Access Ceph RGW at http://localhost:8080
 # Default credentials: demo/demo
@@ -188,7 +188,7 @@ EOF
 
 **Solution:** Verify kernel version and rebuild container:
 ```bash
-podman-compose -f podman-compose.iouring.yml build --no-cache
+podman-compose -f docker/docker-compose.iouring.yml build --no-cache
 ```
 
 ### Permission Denied Errors

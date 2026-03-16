@@ -6,14 +6,14 @@ version: '3.8'
 services:
   iouring-dev:
     build:
-      context: .
-      dockerfile: Dockerfile.iouring
+      context: ..
+      dockerfile: docker/Dockerfile.iouring
     container_name: llmd-s3-iouring-dev
     volumes:
       # Mount source code for live development
-      - ./src:/workspace/src
-      - ./tests:/workspace/tests
-      - ./docs:/workspace/docs
+      - ../src:/workspace/src
+      - ../tests:/workspace/tests
+      - ../docs:/workspace/docs
     working_dir: /workspace
     stdin_open: true
     tty: true
