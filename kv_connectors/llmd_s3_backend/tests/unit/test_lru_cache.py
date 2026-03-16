@@ -276,6 +276,62 @@ class TestLRUCacheThreadSafety:
             t.join()
         
         # Should have 100 items (some may have been evicted)
+    
+    def test_concurrent_removals(self):
+        """Test concurrent removals from multiple threads."""
+        cache = LRUPresenceCache(max_size=1000)
+        
+        # Pre-populate cache
+        for i in range(100):
+            cache.add(f"key{i}")
+        
+        def remove_items(start, end):
+            for i in range(start, end):
+                cache.remove(f"key{i}")
+        
+        threads = []
+        # 5 threads each removing 20 items
+        for i in range(5):
+            t = threading.Thread(target=remove_items, args=(i*20, (i+1)*20))
+            threads.append(t)
+            t.start()
+        
+        for t in threads:
+            t.join()
+        
+        # All 100 items should be removed
+        assert len(cache) == 0
+    
+    def test_concurrent_add_remove(self):
+        """Test concurrent additions and removals."""
+        cache = LRUPresenceCache(max_size=100)
+        
+        # Pre-populate with some items
+        for i in range(50):
+            cache.add(f"key{i}")
+        
+        def adder():
+            for i in range(50, 100):
+                cache.add(f"key{i}")
+                time.sleep(0.001)
+        
+        def remover():
+            for i in range(0, 50):
+                cache.remove(f"key{i}")
+                time.sleep(0.001)
+        
+        threads = [
+            threading.Thread(target=adder),
+            threading.Thread(target=remover),
+        ]
+        
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        
+        # Should have ~50 items (the newly added ones)
+        assert 40 <= len(cache) <= 60  # Allow some variance due to timing
         assert len(cache) <= 100
 
 

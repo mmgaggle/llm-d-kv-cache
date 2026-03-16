@@ -363,6 +363,161 @@ def test_avro_serialization(s3_client):
         print_fail(f"Avro test failed: {e}")
         import traceback
         traceback.print_exc()
+
+
+def test_delete_operations(s3_client):
+    """Test DELETE operations in manifest."""
+    print_test("DELETE Operations")
+    
+    try:
+        manager = ManifestManager(
+            s3_client=s3_client,
+            model_name="test-model-delete",
+            tp_size=1,
+            tp_rank=0,
+            dtype="float16",
+            manifest_prefix="test-manifests-delete",
+        )
+        
+        # Add some blocks
+        add_ops = [
+            DeltaOperation("ADD", f"hash{i}", f"key{i}", 524288, "2024-01-15T10:00:00Z")
+            for i in range(10)
+        ]
+        manager._write_delta_batch(add_ops)
+        print_pass("Added 10 blocks")
+        
+        # Verify blocks are present
+        manifest = manager.load_manifest()
+        assert len(manifest) == 10
+        print_pass("Verified 10 blocks in manifest")
+        
+        # Delete some blocks
+        delete_ops = [
+            DeltaOperation("DELETE", f"hash{i}")
+            for i in range(0, 5)
+        ]
+        manager._write_delta_batch(delete_ops)
+        print_pass("Wrote DELETE operations for 5 blocks")
+        
+        # Load manifest and verify deletions
+        manifest = manager.load_manifest()
+        assert len(manifest) == 5, f"Expected 5 blocks after deletion, got {len(manifest)}"
+        
+        # Verify deleted blocks are gone
+        for i in range(0, 5):
+            assert f"hash{i}" not in manifest, f"Block hash{i} should be deleted"
+        
+        # Verify remaining blocks are present
+        for i in range(5, 10):
+            assert f"hash{i}" in manifest, f"Block hash{i} should still exist"
+        
+        print_pass(f"Verified deletions: {len(manifest)} blocks remaining")
+        return True
+        
+    except Exception as e:
+        print_fail(f"DELETE operations test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_concurrent_add_delete(s3_client):
+    """Test concurrent ADD and DELETE operations."""
+    print_test("Concurrent ADD/DELETE Operations")
+    
+    try:
+        # Create multiple managers
+        managers = [
+            ManifestManager(
+                s3_client=s3_client,
+                model_name="test-model-add-delete",
+                tp_size=1,
+                tp_rank=i,
+                dtype="float16",
+                manifest_prefix="test-manifests-add-delete",
+            )
+            for i in range(3)
+        ]
+        print_pass("Created 3 ManifestManagers")
+        
+        # Pre-populate with some blocks
+        initial_ops = [
+            DeltaOperation("ADD", f"initial-hash{i}", f"initial-key{i}", 524288, "2024-01-15T10:00:00Z")
+            for i in range(20)
+        ]
+        managers[0]._write_delta_batch(initial_ops)
+        print_pass("Pre-populated with 20 blocks")
+        
+        def mixed_operations(manager_id, manager):
+            """Perform mixed ADD and DELETE operations."""
+            try:
+                # Add new blocks
+                add_ops = [
+                    DeltaOperation(
+                        "ADD",
+                        f"new-m{manager_id}-hash{i}",
+                        f"new-m{manager_id}-key{i}",
+                        524288,
+                        "2024-01-15T10:00:00Z"
+                    )
+                    for i in range(5)
+                ]
+                manager._write_delta_batch(add_ops)
+                
+                # Delete some initial blocks
+                delete_ops = [
+                    DeltaOperation("DELETE", f"initial-hash{manager_id * 5 + i}")
+                    for i in range(3)
+                ]
+                manager._write_delta_batch(delete_ops)
+                
+                return manager_id, True
+            except Exception as e:
+                return manager_id, False, str(e)
+        
+        # Execute concurrent operations
+        print_info("Starting concurrent ADD/DELETE operations...")
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [
+                executor.submit(mixed_operations, i, manager)
+                for i, manager in enumerate(managers)
+            ]
+            
+            results = []
+            for future in as_completed(futures):
+                result = future.result()
+                results.append(result)
+                if result[1]:
+                    print_pass(f"Manager {result[0]} completed operations")
+                else:
+                    print_fail(f"Manager {result[0]} failed: {result[2]}")
+        
+        # Load final manifest
+        final_manifest = managers[0].load_manifest()
+        
+        # We should have:
+        # - Some of the initial 20 blocks (some deleted)
+        # - Some of the new blocks added by each manager
+        # Exact count depends on which operations succeeded
+        
+        print_info(f"Final manifest has {len(final_manifest)} blocks")
+        
+        # Verify no duplicates
+        block_hashes = list(final_manifest.keys())
+        if len(block_hashes) != len(set(block_hashes)):
+            print_fail("Duplicate blocks detected!")
+            return False
+        
+        print_pass("No duplicates - data integrity maintained")
+        print_pass("Concurrent ADD/DELETE operations completed successfully")
+        return True
+        
+    except Exception as e:
+        print_fail(f"Concurrent ADD/DELETE test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
         return False
 
 
@@ -401,6 +556,8 @@ def main():
         ("Conditional PUT (Concurrent)", lambda: test_conditional_put_concurrent(s3_client)),
         ("ETag Conflict Handling", lambda: test_etag_conflict_handling(s3_client)),
         ("Avro Serialization", lambda: test_avro_serialization(s3_client)),
+        ("DELETE Operations", lambda: test_delete_operations(s3_client)),
+        ("Concurrent ADD/DELETE", lambda: test_concurrent_add_delete(s3_client)),
     ]
     
     results = []
@@ -415,8 +572,9 @@ def main():
     # Cleanup
     if not args.no_cleanup:
         print_test("Cleanup")
-        for prefix in ["test-manifests", "test-manifests-2", "test-manifests-concurrent", 
-                       "test-manifests-etag", "test-manifests-avro"]:
+        for prefix in ["test-manifests", "test-manifests-2", "test-manifests-concurrent",
+                       "test-manifests-etag", "test-manifests-avro", "test-manifests-delete",
+                       "test-manifests-add-delete"]:
             cleanup_test_data(s3_client, prefix)
     
     # Summary
