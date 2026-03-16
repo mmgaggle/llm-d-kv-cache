@@ -454,12 +454,58 @@ class ManifestManager:
             return False
     
     def compact(self):
-        """Compact delta files into a new snapshot."""
+        """
+        Compact delta files into a new snapshot.
+        
+        Optionally reconciles manifest with S3 using LIST API to remove expired blocks.
+        Uses LIST (O(blocks/1000)) instead of HEAD (O(blocks)) for efficiency.
+        """
         try:
             # Load full manifest
             manifest = self.load_manifest()
+            initial_count = len(manifest)
             
-            # Create new snapshot
+            # Reconcile with S3 using LIST API (much more efficient than HEAD)
+            # LIST returns 1000 objects per page, so for 1M blocks = 1000 API calls
+            # vs HEAD which would be 1M API calls
+            reconciled_manifest = {}
+            expired_count = 0
+            
+            if initial_count > 0:
+                logger.info(f"Reconciling {initial_count} blocks with S3 using LIST API...")
+                
+                # Get set of existing S3 keys using LIST
+                existing_keys = set()
+                prefix = f"kv-cache/{self.model_name}/tp_{self.tp_size}/rank_{self.tp_rank}/{self.dtype}/"
+                
+                try:
+                    # List all objects with our prefix
+                    paginator = self.s3_client.s3_client.get_paginator('list_objects_v2')
+                    for page in paginator.paginate(Bucket=self.s3_client.bucket, Prefix=prefix):
+                        if 'Contents' in page:
+                            for obj in page['Contents']:
+                                existing_keys.add(obj['Key'])
+                    
+                    logger.info(f"Found {len(existing_keys)} existing blocks in S3")
+                    
+                    # Filter manifest to only include existing blocks
+                    for block_hash, s3_key in manifest.items():
+                        if s3_key in existing_keys:
+                            reconciled_manifest[block_hash] = s3_key
+                        else:
+                            expired_count += 1
+                    
+                    if expired_count > 0:
+                        logger.info(f"Removed {expired_count} expired/deleted blocks during compaction")
+                
+                except Exception as e:
+                    logger.warning(f"Failed to reconcile with S3: {e}. Using full manifest.")
+                    reconciled_manifest = manifest
+                    expired_count = 0
+            else:
+                reconciled_manifest = manifest
+            
+            # Create new snapshot with reconciled manifest
             snapshot_id = f"snapshot-{int(time.time())}"
             snapshot_dict = {
                 "snapshot_id": snapshot_id,
@@ -468,7 +514,7 @@ class ManifestManager:
                 "tp_size": self.tp_size,
                 "tp_rank": self.tp_rank,
                 "dtype": self.dtype,
-                "block_count": len(manifest),
+                "block_count": len(reconciled_manifest),
                 "blocks": [
                     {
                         "block_hash": block_hash,
@@ -476,7 +522,7 @@ class ManifestManager:
                         "size_bytes": 524288,
                         "created_at": datetime.utcnow().isoformat()
                     }
-                    for block_hash, s3_key in manifest.items()
+                    for block_hash, s3_key in reconciled_manifest.items()
                 ]
             }
             
@@ -496,7 +542,8 @@ class ManifestManager:
             pointer_bytes = self._serialize_avro(MANIFEST_POINTER_SCHEMA, pointer_dict)
             self.s3_client.put_object(pointer_key, pointer_bytes)
             
-            logger.info(f"Compacted {len(manifest)} blocks into snapshot {snapshot_id}")
+            logger.info(f"Compacted {len(reconciled_manifest)} blocks into snapshot {snapshot_id} "
+                       f"(removed {expired_count} expired blocks)")
             
         except Exception as e:
             logger.error(f"Failed to compact: {e}")

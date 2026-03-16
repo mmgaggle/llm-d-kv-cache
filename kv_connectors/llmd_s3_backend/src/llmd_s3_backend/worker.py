@@ -482,6 +482,14 @@ class S3GPUOffloadingHandler(S3OffloadingHandler):
             )
             return (job_id, True)
         except Exception as e:
+            # Check if this is a 404 (object not found) - lazy invalidation
+            if hasattr(e, 'response') and e.response.get('Error', {}).get('Code') == '404':
+                logger.warning(f"[GET] job_id={job_id} object not found (404): {s3_key}. "
+                             "Invalidating presence cache entry.")
+                # Notify manager to invalidate cache entry
+                if hasattr(self, 'manager') and self.manager:
+                    self.manager.invalidate_cache_entry(s3_key)
+            
             logger.error(f"[GET] job_id={job_id} failed: {e}")
             return (job_id, False)
     

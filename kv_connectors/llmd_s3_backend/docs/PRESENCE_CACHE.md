@@ -284,6 +284,188 @@ T=15s: 10-second timeout reached
 - ✅ More efficient Avro compression
 - ✅ Better performance under high write load
 
+## Lifecycle Reconciliation
+
+The system handles S3 lifecycle policies that expire/delete old cache blocks using a **two-tier approach**:
+
+### 1. Lazy Invalidation (Primary Strategy)
+
+**On GetObject Failure (404)**:
+- Worker detects object not found
+- Calls `manager.invalidate_cache_entry(block_hash)`
+- Block removed from presence cache immediately
+- vLLM treats as cache miss and continues
+
+```python
+# In worker._get_blocks()
+try:
+    data = self.s3_client.get_object(s3_key)
+    # ... process data ...
+except Exception as e:
+    if e.response.get('Error', {}).get('Code') == '404':
+        # Lazy invalidation: remove stale entry
+        self.manager.invalidate_cache_entry(block_hash)
+    # Treat as cache miss
+    return (job_id, False)
+```
+
+**Benefits**:
+- ✅ Zero cost (no extra API calls)
+- ✅ Immediate invalidation on access
+- ✅ Simple implementation
+- ✅ Works for any deletion (lifecycle, manual, etc.)
+
+**Tradeoff**:
+- ⚠️ Presence cache may contain stale entries until accessed
+- ⚠️ First access to expired block incurs GetObject cost + cache miss
+
+### 2. LIST-Based Reconciliation (During Compaction)
+
+**Periodic Cleanup** (every 24 hours or 100 deltas):
+- Use S3 LIST API to get all existing blocks
+- Filter manifest to only include existing blocks
+- Much more efficient than HEAD per block
+
+```python
+def compact(self):
+    manifest = self.load_manifest()  # 1,000,000 blocks
+    
+    # LIST all objects with prefix (1000 per page)
+    existing_keys = set()
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page['Contents']:
+            existing_keys.add(obj['Key'])
+    
+    # Filter manifest
+    reconciled = {h: k for h, k in manifest.items() if k in existing_keys}
+    # 1,000,000 - 50,000 = 950,000 blocks
+```
+
+**Performance**:
+- LIST: O(blocks/1000) API calls
+  - 1M blocks = 1,000 LIST calls (~$0.005)
+- HEAD: O(blocks) API calls
+  - 1M blocks = 1,000,000 HEAD calls (~$400) ❌
+
+**Cost Comparison** (1M blocks, 50k expired):
+| Method | API Calls | Cost | Time |
+|--------|-----------|------|------|
+| LIST | 1,000 | $0.005 | ~10 seconds |
+| HEAD | 1,000,000 | $400 | ~2.8 hours |
+| Lazy | 50,000 (on access) | $0.02 | Distributed over time |
+
+### Combined Strategy
+
+```
+Normal Operation:
+  ├─> vLLM requests block
+  ├─> Presence cache: "exists" ✅
+  ├─> Worker: GetObject
+  ├─> S3: 404 (expired)
+  └─> Lazy invalidation: remove from cache
+
+Compaction (every 24h):
+  ├─> LIST all blocks in S3
+  ├─> Filter manifest to existing blocks
+
+### Cross-Instance Synchronization
+
+**Problem**: Multiple vLLM instances with independent presence caches
+
+```
+Instance A: Compacts manifest, removes 50k expired blocks
+Instance B: Still has 50k stale entries in cache
+Instance C: Still has 50k stale entries in cache
+```
+
+**Solution**: Periodic manifest sync (every 5 minutes)
+
+```python
+def _refresh_cache_loop(self):
+    while True:
+        time.sleep(300)  # 5 minutes
+        
+        # Load latest manifest (includes compaction changes)
+        manifest = load_manifest()
+        
+        # Full sync: add new blocks AND remove deleted blocks
+        new_blocks = manifest_keys - current_keys
+        deleted_blocks = current_keys - manifest_keys
+        
+        presence_cache.update(new_blocks)
+        for block in deleted_blocks:
+            presence_cache.remove(block)
+```
+
+**Timeline Example**:
+
+```
+T=0:00  Instance A compacts, removes 50k expired blocks
+        ├─> Manifest updated in S3
+        └─> Instance A cache: 950k blocks ✅
+
+T=0:00  Instance B & C still have stale caches
+        └─> Cache: 1M blocks (50k stale) ⚠️
+
+T=0:30  Instance B accesses expired block
+        ├─> GetObject → 404
+        ├─> Lazy invalidation
+        └─> Cache: 999,999 blocks (49,999 stale)
+
+T=5:00  Instance B & C periodic sync
+        ├─> Load manifest from S3
+        ├─> Detect 50k deleted blocks
+        ├─> Remove from cache
+        └─> Cache: 950k blocks ✅
+
+Result: All instances converged within 5 minutes
+```
+
+**Convergence Guarantees**:
+- **Immediate**: Lazy invalidation on access (per-block)
+- **5 minutes**: Periodic sync (bulk cleanup)
+- **24 hours**: Compaction (authoritative source)
+
+**Tradeoffs**:
+- ⚠️ Up to 5-minute window with stale entries
+- ✅ Acceptable: lazy invalidation handles access
+- ✅ No coordination protocol needed
+- ✅ Eventually consistent
+
+  ├─> Write new snapshot
+  └─> Presence cache refreshed on next load
+```
+
+**Result**: Best of both worlds
+- Immediate cleanup on access (lazy)
+- Periodic bulk cleanup (LIST)
+- Minimal cost and latency
+
+### Lifecycle Policy Example
+
+```json
+{
+  "Rules": [
+    {
+      "Id": "ExpireOldCacheBlocks",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "kv-cache/"
+      },
+      "Expiration": {
+        "Days": 30
+      }
+    }
+  ]
+}
+```
+
+With this policy:
+- Cache blocks older than 30 days are automatically deleted
+- Compaction removes stale references every 24 hours
+- Presence cache stays accurate
+
+
 ## Immutability and Concurrency Control
 
 The manifest system follows an **immutable data structure** pattern with a single mutable pointer:
@@ -1008,3 +1190,45 @@ The presence cache with Iceberg-style manifests provides:
 ✅ **Production-ready** - Compaction, refresh, conflict resolution
 
 This is an optional feature that significantly improves performance for large-scale deployments with multiple vLLM instances sharing a cache bucket.
+
+### 3. S3 Event Notifications (Future Enhancement)
+
+**Real-Time Invalidation** via S3 bucket notifications:
+
+```json
+{
+  "LambdaFunctionConfigurations": [{
+    "Events": ["s3:ObjectRemoved:*"],
+    "Filter": {
+      "Key": {"FilterRules": [{"Name": "prefix", "Value": "kv-cache/"}]}
+    },
+    "LambdaFunctionArn": "arn:aws:lambda:region:account:function:invalidate-cache"
+  }]
+}
+```
+
+**Architecture**:
+```
+S3 Lifecycle → Delete Object
+  ↓
+S3 Event Notification
+  ↓
+SQS Queue (buffer)
+  ↓
+vLLM Instances (poll queue)
+  ↓
+Batch Invalidate Cache Entries
+```
+
+**Benefits**:
+- ✅ Real-time invalidation (seconds, not hours)
+- ✅ Zero GetObject failures
+- ✅ No LIST API costs
+- ✅ Scales to millions of blocks
+
+**Implementation Complexity**: Medium
+- Requires SQS queue setup
+- vLLM needs background thread to poll queue
+- Batch processing for efficiency
+
+**Future Work**: Can be added as optional feature without breaking existing lazy/LIST approach.

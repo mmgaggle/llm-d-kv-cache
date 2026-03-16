@@ -170,22 +170,41 @@ class S3OffloadingManager(OffloadingManager):
             self._presence_cache = LRUPresenceCache(max_size=self._cache_max_size)
     
     def _refresh_cache_loop(self):
-        """Periodically refresh presence cache from manifest."""
+        """
+        Periodically refresh presence cache from manifest.
+        
+        Performs full sync: adds new blocks AND removes deleted blocks.
+        This ensures all instances eventually converge to the same state
+        after compaction removes expired blocks.
+        """
         while True:
             try:
                 time.sleep(300)  # Refresh every 5 minutes
                 
                 if self._manifest_manager and self._presence_cache:
+                    # Load latest manifest (includes compaction changes)
                     manifest = self._manifest_manager.load_manifest()
+                    manifest_keys = set(manifest.keys())
                     current_keys = self._presence_cache.get_keys()
-                    new_blocks = set(manifest.keys()) - current_keys
+                    
+                    # Calculate diff
+                    new_blocks = manifest_keys - current_keys
+                    deleted_blocks = current_keys - manifest_keys
+                    
+                    # Apply changes
                     if new_blocks:
                         self._presence_cache.update(new_blocks)
+                    
+                    if deleted_blocks:
+                        for block_hash in deleted_blocks:
+                            self._presence_cache.remove(block_hash)
+                    
+                    if new_blocks or deleted_blocks:
                         stats = self._presence_cache.get_stats()
                         logger.info(
-                            f"Refreshed cache: added {len(new_blocks)} new blocks, "
-                            f"size={stats['size']}, evictions={stats['evictions']}, "
-                            f"hit_rate={stats['hit_rate']:.2%}"
+                            f"Synced cache with manifest: "
+                            f"added={len(new_blocks)}, removed={len(deleted_blocks)}, "
+                            f"size={stats['size']}, hit_rate={stats['hit_rate']:.2%}"
                         )
                             
             except Exception as e:
@@ -252,6 +271,16 @@ class S3OffloadingManager(OffloadingManager):
     def complete_load(self, block_hashes: Iterable[BlockHash]):
         """Stateless load - no post-load action needed."""
         pass
+    
+    def invalidate_cache_entry(self, block_hash: BlockHash):
+        """
+        Remove a block from the presence cache (lazy invalidation).
+        Called when GetObject fails with 404 (object expired/deleted).
+        """
+        if self._presence_cache is not None:
+            block_hash_str = str(block_hash) if not isinstance(block_hash, str) else block_hash
+            self._presence_cache.remove(block_hash_str)
+            logger.info(f"Invalidated presence cache entry for block {block_hash_str}")
 
     # ----------------------------------------------------------------------
     # Store
