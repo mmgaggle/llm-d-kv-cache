@@ -13,7 +13,7 @@ This backend provides a cloud-native offloading layer for vLLM, moving KV-cache 
 The S3 connector stores each KV cache block as a separate S3 object, organized hierarchically for efficient lookup and retrieval.
 
 ## System Requirements
-- vLLM version 0.11.0 or above, which includes the Offloading Connector
+- vLLM version 0.17.1 or above, which includes the Offloading Connector
 - Python 3.9+
 - boto3 and botocore
 
