@@ -12,12 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+S3 offloading connector factory registration.
+
+This module registers :class:`~llmd_s3_backend.spec.S3OffloadingSpec`
+with vLLM's :class:`OffloadingSpecFactory` so that it can be selected
+at runtime via the ``kv_connector`` configuration key.
+
+Registration happens at import time.  When the ``llmd_s3_backend``
+package is installed and the user sets
+``kv_connector = "S3OffloadingSpec"`` in their vLLM config, the
+factory lazily imports :mod:`llmd_s3_backend.spec` and instantiates
+the spec, which in turn creates the S3 manager and GPU↔S3 transfer
+handlers.
+"""
+
 from vllm.logger import init_logger
 from vllm.v1.kv_offload.factory import OffloadingSpecFactory
 
 logger = init_logger(__name__)
 
-# Register S3OffloadingSpec to offloading connector
 OffloadingSpecFactory.register_spec(
     "S3OffloadingSpec", "llmd_s3_backend.spec", "S3OffloadingSpec"
 )

@@ -40,6 +40,61 @@ class S3OffloadingSpec(OffloadingSpec):
     """
 
     def __init__(self, vllm_config: VllmConfig, kv_cache_config=None):
+        """
+        Initialize S3 offloading spec from vLLM configuration.
+
+        Configuration is read from ``vllm_config.kv_transfer_config
+        .kv_connector_extra_config``. The following keys are supported:
+
+        Args:
+            vllm_config: Top-level vLLM configuration object.
+            kv_cache_config: Optional KV cache configuration override.
+
+        Extra-config keys (via ``kv_connector_extra_config``):
+            s3_bucket (str): **Required.** S3 bucket name.
+            s3_prefix (str): S3 key prefix for KV objects.
+                Default: ``"kv-cache"``.
+            s3_region (str | None): AWS region.
+                Default: from environment or ``"us-east-1"``.
+            s3_endpoint_url (str | None): Custom endpoint URL for
+                S3-compatible services (e.g. MinIO, Ceph).
+            s3_addressing_style (str): S3 addressing style.
+                One of ``"auto"``, ``"path"``, ``"virtual"``.
+                Default: ``"auto"``.
+            s3_profile_name (str | None): AWS named profile from
+                credentials file.
+            threads_per_gpu (int): Worker threads per GPU for async
+                transfers. Capped at 64. Default: ``64``.
+            max_staging_memory_gb (int): Maximum pinned staging memory
+                in GB. Default: ``150``.
+            enable_presence_cache (bool): Enable LRU presence cache
+                backed by a manifest for cross-instance sync.
+                Default: ``False``.
+            manifest_prefix (str): S3 prefix for manifest files.
+                Default: ``"manifests"``.
+            compaction_threshold (int): Number of delta files that
+                triggers manifest compaction. Default: ``100``.
+            compaction_interval_hours (int): Minimum hours between
+                automatic compactions. Default: ``24``.
+            cache_max_size (int | None): Maximum entries in the LRU
+                presence cache. ``None`` for unbounded.
+                Default: ``1_000_000``.
+            io_driver (str): I/O driver for S3 transfers.
+                One of ``"auto"``, ``"crt"``, ``"io_uring"``,
+                ``"cuobject"``. Default: ``"auto"``.
+            iouring_queue_depth (int): io_uring submission queue depth.
+                Default: ``1024``.
+            iouring_num_workers (int): io_uring worker thread count.
+                Default: ``16``.
+            pinned_buffer_size_mb (int): Size of each pinned buffer
+                in MB. Default: ``128``.
+            pinned_buffer_pool_size (int): Number of pinned buffers
+                in the pool. Default: ``64``.
+
+        Raises:
+            ValueError: If ``s3_bucket`` is missing or ``io_driver``
+                is not a recognized value.
+        """
         super().__init__(vllm_config, kv_cache_config)
 
         self._num_blocks: Optional[int] = None

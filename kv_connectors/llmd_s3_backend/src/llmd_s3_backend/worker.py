@@ -123,7 +123,28 @@ class S3OffloadingHandler(OffloadingHandler):
         min_mb=32,
         max_mb=None,
     ):
-        """Estimate staging memory size in MB."""
+        """
+        Estimate the staging-buffer size needed per file transfer.
+
+        Computes the memory footprint of one batch of
+        ``gpu_blocks_per_file`` blocks across all KV-cache layers
+        (or a single layer, depending on the cache layout).
+
+        Args:
+            tensors: List of GPU KV-cache tensors.
+            gpu_blocks_per_file: Number of GPU blocks packed into
+                each S3 object.
+            layers_before_num_blocks: Whether the tensor layout has
+                a layer dimension before the num_blocks dimension.
+            num_blocks_idx: Axis index of the num_blocks dimension.
+            safety: Multiplier applied to the raw byte estimate.
+                Default: ``1.0``.
+            min_mb: Floor for the returned size. Default: ``32``.
+            max_mb: Optional ceiling for the returned size.
+
+        Returns:
+            int: Estimated buffer size in megabytes.
+        """
         ref = tensors[0]
         per_block = ref.index_select(
             num_blocks_idx, torch.tensor([0], device=ref.device)
@@ -150,7 +171,27 @@ class S3OffloadingHandler(OffloadingHandler):
             return finished
 
     def get_kv_cache_parameters(self, gpu_caches: dict[str, torch.Tensor]):
-        """Determine KV cache layout parameters."""
+        """
+        Detect the KV cache tensor layout for each layer.
+
+        Probes each layer's :meth:`AttentionBackend.get_kv_cache_shape`
+        with a sentinel ``num_blocks=1234`` and compares the resulting
+        shape to the actual GPU tensor shape to determine:
+
+        * ``num_blocks_idx``: Axis containing the block count.
+        * ``kv_before_num_blocks``: Whether a KV (key/value) dimension
+          precedes the block axis.
+        * ``layers_before_num_blocks``: Whether a layers dimension
+          precedes the block axis.
+
+        Args:
+            gpu_caches: Mapping of layer names to GPU tensors.
+
+        Returns:
+            Tuple of three parallel lists (one entry per layer):
+            ``(num_blocks_idx, kv_before_num_blocks,
+            layers_before_num_blocks)``.
+        """
         list_num_blocks_idx = []
         list_kv_before_num_blocks = []
         list_layers_before_num_blocks = []
@@ -248,7 +289,23 @@ class GPUS3OffloadingHandler(S3OffloadingHandler):
     def _put_blocks_to_s3(
         self, job_id: int, s3_key: str, tensors: List[torch.Tensor], block_ids: List[int]
     ) -> Tuple[int, bool]:
-        """Upload blocks to S3 (runs in thread pool)."""
+        """
+        Extract KV blocks from GPU tensors, serialize, and upload to S3.
+
+        Runs inside the thread-pool executor. Each tensor is indexed by
+        ``block_ids`` along the num_blocks dimension, moved to CPU, and
+        serialized as a compressed numpy archive (``np.savez_compressed``).
+
+        Args:
+            job_id: Unique identifier for this transfer job.
+            s3_key: Destination S3 object key.
+            tensors: Source GPU tensors (one per KV-cache layer).
+            block_ids: Indices of blocks to extract from each tensor.
+
+        Returns:
+            Tuple of ``(job_id, success)`` where *success* is ``False``
+            if any step raises an exception.
+        """
         try:
             # Extract blocks from GPU tensors
             blocks_data = []
@@ -276,7 +333,22 @@ class GPUS3OffloadingHandler(S3OffloadingHandler):
             return (job_id, False)
 
     def transfer_async(self, job_id: int, spec: TransferSpec) -> bool:
-        """Launch async PUT transfers from GPU tensors to S3."""
+        """
+        Submit asynchronous PUT transfers from GPU tensors to S3.
+
+        Splits the source block IDs into chunks of
+        ``gpu_blocks_per_file`` and submits each chunk to the
+        thread-pool executor via :meth:`_put_blocks_to_s3`.
+
+        Args:
+            job_id: Unique identifier for this transfer job.
+            spec: ``(src_spec, dst_spec)`` tuple where *src_spec*
+                contains the GPU ``block_ids`` and *dst_spec* contains
+                the destination ``block_hashes``.
+
+        Returns:
+            ``True`` if all jobs were submitted (or the spec was empty).
+        """
         src_spec, dst_spec = spec
         if dst_spec is None or len(dst_spec.block_hashes) == 0:
             return True
@@ -447,7 +519,28 @@ class S3GPUOffloadingHandler(S3OffloadingHandler):
     def _get_blocks_from_s3(
         self, job_id: int, s3_key: str, tensors: List[torch.Tensor], block_ids: List[int]
     ) -> Tuple[int, bool]:
-        """Download blocks from S3 (runs in thread pool)."""
+        """
+        Download KV blocks from S3 and copy them into GPU tensors.
+
+        Tries the io_uring zero-copy path first (if enabled), then
+        falls back to the standard CRT/boto3 path. Downloaded data is
+        deserialized from ``np.savez_compressed`` format and written
+        into each tensor at the positions given by ``block_ids``.
+
+        On a 404 response the presence cache entry is lazily
+        invalidated via :meth:`S3OffloadingManager.invalidate_cache_entry`.
+
+        Args:
+            job_id: Unique identifier for this transfer job.
+            s3_key: Source S3 object key.
+            tensors: Destination GPU tensors (one per KV-cache layer).
+            block_ids: Indices in each tensor where downloaded blocks
+                should be written.
+
+        Returns:
+            Tuple of ``(job_id, success)`` where *success* is ``False``
+            if the download or deserialization fails.
+        """
         # Try io_uring zero-copy path first if enabled
         if self.enable_iouring and self.iouring_pool and self.pinned_buffer_pool:
             try:
@@ -497,14 +590,36 @@ class S3GPUOffloadingHandler(S3OffloadingHandler):
         self, job_id: int, s3_key: str, tensors: List[torch.Tensor], block_ids: List[int]
     ) -> Tuple[int, bool]:
         """
-        Download blocks from S3 using io_uring zero-copy path.
-        
-        This method:
-        1. Acquires a pinned buffer from the pool
-        2. Downloads directly into pinned memory (zero-copy)
-        3. Deserializes from pinned buffer
-        4. Copies to GPU tensors
-        5. Returns buffer to pool
+        Download blocks from S3 using the io_uring zero-copy path.
+
+        Bypasses boto3/CRT by issuing SigV4-signed HTTP requests
+        through the io_uring connection pool and receiving data
+        directly into page-locked (pinned) memory, enabling DMA
+        transfers to the GPU without an extra copy.
+
+        Flow:
+            1. Acquire a pinned buffer from the pool (blocks if none
+               available, up to *timeout* seconds).
+            2. Download the S3 object into pinned memory via
+               :meth:`IoUringPool.get_object_zerocopy`.
+            3. Deserialize the ``np.savez_compressed`` archive.
+            4. Copy blocks into GPU tensors at ``block_ids``.
+            5. Release the pinned buffer back to the pool.
+
+        Args:
+            job_id: Unique identifier for this transfer job.
+            s3_key: Source S3 object key.
+            tensors: Destination GPU tensors (one per KV-cache layer).
+            block_ids: Indices in each tensor where downloaded blocks
+                should be written.
+
+        Returns:
+            Tuple of ``(job_id, True)`` on success.
+
+        Raises:
+            RuntimeError: If zero bytes are read from S3.
+            Exception: Re-raised after logging so the caller can
+                fall back to the CRT path.
         """
         pinned_buffer = None
         try:
@@ -561,7 +676,22 @@ class S3GPUOffloadingHandler(S3OffloadingHandler):
         super().__del__()
     
     def transfer_async(self, job_id: int, spec: TransferSpec) -> bool:
-        """Launch async GET transfers from S3 to GPU tensors."""
+        """
+        Submit asynchronous GET transfers from S3 to GPU tensors.
+
+        Splits destination block IDs into chunks sized to match the
+        source block hashes and submits each chunk to the thread-pool
+        executor via :meth:`_get_blocks_from_s3`.
+
+        Args:
+            job_id: Unique identifier for this transfer job.
+            spec: ``(src_spec, dst_spec)`` tuple where *src_spec*
+                contains the S3 ``block_hashes`` and *dst_spec*
+                contains the GPU ``block_ids`` to write into.
+
+        Returns:
+            ``True`` if all jobs were submitted (or the spec was empty).
+        """
         src_spec, dst_spec = spec
         if src_spec is None or len(src_spec.block_hashes) == 0:
             return True
