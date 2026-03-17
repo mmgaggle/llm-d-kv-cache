@@ -170,7 +170,7 @@ class TestGetS3Key:
 
     @patch("llmd_s3_backend.worker.torch.cuda.Stream", return_value=Mock())
     @patch("llmd_s3_backend.worker.S3ClientWrapper")
-    def test_key_has_hierarchical_structure(self, mock_client_cls, mock_stream, mock_attn_backends):
+    def test_key_has_prefix_structure(self, mock_client_cls, mock_stream, mock_attn_backends):
         HandlerCls = _make_concrete_put_handler_cls()
         kv_caches = make_kv_caches(num_layers=1)
         handler = HandlerCls(

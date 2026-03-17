@@ -6,16 +6,16 @@ The S3 backend connector for vLLM has been successfully developed and unit teste
 
 ## What Works on macOS
 
-✅ **Unit Tests** - All 12 unit tests pass successfully:
+✅ **Unit Tests** - All unit tests pass successfully:
 ```bash
 cd kv_connectors/llmd_s3_backend
 source venv/bin/activate
-pytest tests/test_s3_backend.py -v
+pytest tests/unit/ -v
 ```
 
 ✅ **S3 Connectivity** - Ceph S3 connection validated:
 ```bash
-python test_ceph.py
+python tests/integration/test_ceph.py
 ```
 
 ✅ **Code Quality** - All components implemented and documented:
@@ -97,7 +97,7 @@ vllm serve ibm-granite/granite-3b-code-instruct \
 
 ### Completed ✅
 - [x] S3 backend connector implementation
-- [x] Unit tests (12 tests, all passing)
+- [x] Unit tests (all passing)
 - [x] S3 connectivity validation
 - [x] Documentation (README, TESTING.md)
 - [x] Deployment manifests (Kubernetes YAML)

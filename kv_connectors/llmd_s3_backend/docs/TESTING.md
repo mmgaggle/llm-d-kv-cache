@@ -5,7 +5,7 @@ This guide covers how to test the S3 backend connector for vLLM KV cache offload
 ## Prerequisites
 
 - Python 3.12 (required for vLLM compatibility)
-- S3-compatible storage (AWS S3, Ceph, MinIO, etc.)
+- S3-compatible storage (AWS S3, Ceph, etc.)
 - **GPU-enabled Linux system** (CUDA or ROCm) for full vLLM integration testing
 
 ### Platform Support
@@ -63,13 +63,13 @@ pytest tests/ -v
 
 ```bash
 # Test S3LoadStoreSpec
-pytest tests/test_s3_backend.py::TestS3LoadStoreSpec -v
+pytest tests/unit/test_s3_backend.py::TestS3LoadStoreSpec -v
 
 # Test S3ClientWrapper
-pytest tests/test_s3_backend.py::TestS3ClientWrapper -v
+pytest tests/unit/test_s3_backend.py::TestS3ClientWrapper -v
 
 # Test S3OffloadingManager
-pytest tests/test_s3_backend.py::TestS3OffloadingManager -v
+pytest tests/unit/test_s3_backend.py::TestS3OffloadingManager -v
 ```
 
 ### Run with Coverage
@@ -167,7 +167,7 @@ EOF
 Or use the provided test script:
 ```bash
 source venv/bin/activate
-python test_ceph.py
+python tests/integration/test_ceph.py
 ```
 
 ### Local Ceph Container (Development Testing)
@@ -205,7 +205,7 @@ aws --profile zgw s3 mb s3://vllm
 4. Verify connectivity:
 ```bash
 source venv/bin/activate
-python test_ceph.py
+python tests/integration/test_ceph.py
 ```
 
 ## Testing with vLLM
@@ -316,7 +316,7 @@ Use the provided validation script to test the complete workflow:
 
 ```bash
 source venv/bin/activate
-./validate_s3_cache.sh
+./tests/integration/validate_s3_cache.sh
 ```
 
 This script will:
@@ -459,7 +459,7 @@ export STORAGE_CONNECTOR_DEBUG=1
 1. Check vLLM version:
 ```bash
 pip show vllm
-# Should be >= 0.11.0
+# Should be >= 0.17.1
 ```
 
 2. Verify GPU availability:

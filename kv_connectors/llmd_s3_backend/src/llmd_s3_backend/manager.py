@@ -214,7 +214,7 @@ class S3OffloadingManager(OffloadingManager):
     def _get_s3_key(self, block_hash: BlockHash) -> str:
         """
         Generate S3 key for a given block hash.
-        Uses same hierarchical structure as filesystem connector.
+        Uses same prefix structure as the filesystem connector.
         """
         if isinstance(block_hash, bytes):
             block_hash = int.from_bytes(block_hash, "little")

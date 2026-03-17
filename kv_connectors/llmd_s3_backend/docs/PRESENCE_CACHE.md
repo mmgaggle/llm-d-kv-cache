@@ -92,7 +92,7 @@ s3://my-vllm-bucket/
     │   └── tp_8/
     │       └── rank_0/
     │           └── float16/
-    │               ├── 74f/                     # Hash-based hierarchy
+    │               ├── 74f/                     # Hash-based prefix
     │               │   └── 81/
     │               │       └── 74f81fe167d99b4c.bin  # Cache block (512 KB)
     │               ├── 750/

@@ -1,5 +1,13 @@
 # Multipathing Analysis: io_uring vs CRT Client
 
+> **Implementation Status: Design Only**
+>
+> This document is an analysis and design proposal. None of the multipathing
+> enhancements described here have been implemented. The CRT client's
+> built-in multipathing is used in production. The `IoUringPool` class
+> accepts multiple endpoints in its constructor but the io_uring data path
+> itself is still a prototype (see [IOURING_DESIGN.md](./IOURING_DESIGN.md)).
+
 ## Question
 
 **Does the io_uring approach support multipathing across S3 endpoints returned from DNS like the CRT client?**

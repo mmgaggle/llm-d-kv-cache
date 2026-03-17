@@ -57,7 +57,7 @@ class S3OffloadingSpec(OffloadingSpec):
             s3_region (str | None): AWS region.
                 Default: from environment or ``"us-east-1"``.
             s3_endpoint_url (str | None): Custom endpoint URL for
-                S3-compatible services (e.g. MinIO, Ceph).
+                S3-compatible services (e.g. Ceph).
             s3_addressing_style (str): S3 addressing style.
                 One of ``"auto"``, ``"path"``, ``"virtual"``.
                 Default: ``"auto"``.

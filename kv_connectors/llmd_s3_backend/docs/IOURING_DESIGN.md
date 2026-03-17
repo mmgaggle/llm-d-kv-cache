@@ -1,5 +1,20 @@
 # io_uring Zero-Copy S3 Integration Design
 
+> **Implementation Status: Prototype**
+>
+> | Component | File | Status |
+> |-----------|------|--------|
+> | io_uring bindings | `iouring_ops.py` | Implemented — liburing FFI, buffer registration, `prep_read_fixed` |
+> | Connection pool | `iouring_pool.py` | **Prototype** — uses standard sockets, not actual io_uring for data transfer |
+> | Pinned buffers | `pinned_buffers.py` | Implemented — allocation, acquire/release, GPU copy |
+> | SigV4 signing | `s3_auth.py` | Implemented — full AWS SigV4 request signing |
+> | Worker integration | `worker.py` | Partial — `_get_blocks_zerocopy` coded but calls prototype pool; CRT fallback is the active path |
+> | True zero-copy (Phase 5) | — | Design only — `IORING_OP_READ_FIXED` to registered buffers not yet wired end-to-end |
+>
+> The CRT-based path (`io_driver="crt"`) is production-ready. The io_uring path
+> can be enabled with `io_driver="io_uring"` but transparently falls back to CRT
+> if unavailable or on error.
+
 ## Overview
 
 This document describes the design for integrating Linux io_uring with the S3 backend to achieve zero-copy data transfer for KV cache blocks.
@@ -203,8 +218,8 @@ class S3GPUOffloadingHandler(S3OffloadingHandler):
 ### Phase 3: Testing & Benchmarking (Week 3)
 
 **Test files to create:**
-- `tests/test_iouring_pool.py` - Unit tests for io_uring
-- `tests/test_pinned_buffers.py` - Buffer pool tests
+- `tests/unit/test_iouring_ops.py` - Unit tests for io_uring
+- `tests/unit/test_pinned_buffers.py` - Buffer pool tests
 - `tests/benchmark_iouring.py` - Performance comparison
 
 **Benchmarks to run:**

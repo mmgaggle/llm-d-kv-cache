@@ -1,5 +1,15 @@
 # io_uring Development Guide
 
+> **Implementation Status: Prototype / In Development**
+>
+> The io_uring data path is architecturally complete but the connection pool
+> (`iouring_pool.py`) currently uses standard Python sockets rather than
+> actual `io_uring` syscalls for S3 transfers. The low-level liburing
+> bindings (`iouring_ops.py`), pinned buffer pool, and SigV4 signing are
+> production-ready. In practice, all deployments currently use the CRT
+> driver (`io_driver="crt"`). See [IOURING_DESIGN.md](./IOURING_DESIGN.md)
+> for the full component status table.
+
 ## Testing Status
 
 ### Unit Tests (Passing ✅)
@@ -57,8 +67,8 @@ podman-compose -f docker/docker-compose.iouring.yml exec iouring-dev bash
 
 ```bash
 # Inside container
-python -m pytest tests/test_pinned_buffers.py -v
-python -m pytest tests/test_iouring_pool.py -v  # When implemented
+python -m pytest tests/unit/test_pinned_buffers.py -v
+python -m pytest tests/unit/test_iouring_ops.py -v
 ```
 
 ### 4. Test with Local Ceph RGW (S3-compatible)
@@ -95,10 +105,10 @@ Changes made on macOS are immediately visible in the container.
 # Inside container
 
 # Test pinned buffers
-python -m pytest tests/test_pinned_buffers.py::TestPinnedBufferPool::test_concurrent_access -v
+python -m pytest tests/unit/test_pinned_buffers.py::TestPinnedBufferPool::test_concurrent_access -v
 
 # Test io_uring pool
-python -m pytest tests/test_iouring_pool.py -v -s
+python -m pytest tests/unit/test_iouring_ops.py -v -s
 
 # Run with coverage
 python -m pytest tests/ --cov=llmd_s3_backend --cov-report=html
@@ -110,7 +120,7 @@ python -m pytest tests/ --cov=llmd_s3_backend --cov-report=html
 # Inside container
 
 # Benchmark pinned vs pageable memory
-python -m pytest tests/test_pinned_buffers.py::TestPinnedBufferPerformance -v -s
+python -m pytest tests/unit/test_pinned_buffers.py::TestPinnedBufferPerformance -v -s
 
 # Benchmark io_uring vs standard sockets
 python tests/benchmark_iouring.py  # When implemented
@@ -263,7 +273,7 @@ For production:
 ## Next Steps
 
 1. **Implement real io_uring operations** in `iouring_pool.py`
-2. **Add comprehensive tests** in `tests/test_iouring_pool.py`
+2. **Add comprehensive tests** in `tests/unit/`
 3. **Benchmark** against CRT client
 4. **Integrate** with worker.py
 5. **Test** on production Linux systems
@@ -273,4 +283,3 @@ For production:
 - [io_uring documentation](https://kernel.dk/io_uring.pdf)
 - [liburing GitHub](https://github.com/axboe/liburing)
 - [Podman Desktop for Mac](https://docs.docker.com/desktop/mac/)
-- [MinIO Documentation](https://min.io/docs/minio/linux/index.html)

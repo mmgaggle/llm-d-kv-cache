@@ -10,11 +10,11 @@ This backend provides a cloud-native offloading layer for vLLM, moving KV-cache 
 - Support for AWS S3 and S3-compatible services (Ceph, etc.)
 - Flexible credential management (env vars, profiles, IAM roles)
 
-The S3 connector stores each KV cache block as a separate S3 object, organized hierarchically for efficient lookup and retrieval.
+The S3 connector stores each KV cache block as a separate S3 object, organized under structured key prefixes for efficient lookup and retrieval.
 
 ## System Requirements
 - vLLM version 0.17.1 or above, which includes the Offloading Connector
-- Python 3.9+
+- Python 3.12+ (required by vLLM 0.17.1)
 - boto3 and botocore
 
 ## Installation
@@ -144,12 +144,12 @@ It is recommended to use multiprocess mode by setting:
 
 ## S3 Object Structure
 
-KV cache blocks are stored in S3 with the following hierarchical structure:
+KV cache blocks are stored in S3 with the following key prefix structure:
 
 ```
 s3://bucket/prefix/model_name/tp_size/rank_X/dtype/abc/de/abcdef0123456789.bin
                    └─────────┘ └─────┘ └────┘ └───┘ └─┘└─┘└──────────────────┘
-                   model info   TP info  rank  dtype  hash-based hierarchy
+                   model info   TP info  rank  dtype  hash-based prefixes
 ```
 
 Example:
@@ -159,7 +159,7 @@ s3://my-bucket/kv-cache/llama3-70b/tp_8/rank_0/float16/a1b/2c/a1b2c3d4e5f67890.b
 
 This structure:
 - Organizes blocks by model, tensor parallelism, and data type
-- Uses hash-based subdirectories to avoid S3 prefix hotspots
+- Uses hash-based key prefixes to avoid S3 request-rate hotspots
 - Maintains compatibility with the filesystem connector's format
 
 ## K8s Deployment Example
