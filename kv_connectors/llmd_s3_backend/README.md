@@ -24,25 +24,25 @@ vLLM Scheduler
 └──────────┬───────────────────────────┬───────────┘
            │                           │
            ▼                           ▼
-┌─────────────────────┐   ┌──────────────────────────────┐
+┌──────────────────────┐   ┌───────√───────────────────────┐
 │  S3OffloadingManager │   │  Worker Handlers              │
 │                      │   │                               │
-│  - lookup (HEAD)     │   │  GPUS3OffloadingHandler (PUT)  │
-│  - prepare_load      │   │    GPU → CPU copy              │
-│  - prepare_store     │   │    serialize (numpy)           │
-│  - presence cache    │   │    S3 PUT via thread pool      │
+│  - lookup (HEAD)     │   │  GPUS3OffloadingHandler (PUT) │
+│  - prepare_load      │   │    GPU → CPU copy             │
+│  - prepare_store     │   │    serialize (numpy)          │
+│  - presence cache    │   │    S3 PUT via thread pool     │
 │  - manifest sync     │   │                               │
-└──────────┬───────────┘   │  S3GPUOffloadingHandler (GET)  │
-           │               │    S3 GET via thread pool      │
-           │               │    deserialize (numpy)         │
-           │               │    CPU → GPU copy              │
+└──────────┬───────────┘   │  S3GPUOffloadingHandler (GET) │
+           │               │    S3 GET via thread pool     │
+           │               │    deserialize (numpy)        │
+           │               │    CPU → GPU copy             │
            │               └──────────────┬────────────────┘
            │                              │
            ▼                              ▼
       ┌──────────────────────────────────────┐
-      │  S3ClientWrapper (boto3)              │
-      │  put_object / get_object / head /     │
-      │  list / delete / conditional PUT      │
+      │  S3ClientWrapper (boto3)             │
+      │  put_object / get_object / head /    │
+      │  list / delete / conditional PUT     │
       └──────────────────┬───────────────────┘
                          │
                          ▼

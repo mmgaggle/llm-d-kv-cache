@@ -75,10 +75,10 @@ class IoUringPool:
 The design document specifies a **hybrid approach** that preserves CRT's multipathing:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    S3OffloadingHandler                       │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │              S3ClientWrapper                         │   │
+┌────────────────────────────────────────────────────────────┐
+│                    S3OffloadingHandler                     │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │              S3ClientWrapper                        │   │
 │  │  ┌────────────────┐         ┌──────────────────┐    │   │
 │  │  │  CRT Client    │         │  IoUringPool     │    │   │
 │  │  │  (Control)     │         │  (Data Path)     │    │   │
@@ -89,8 +89,8 @@ The design document specifies a **hybrid approach** that preserves CRT's multipa
 │  │  │ - Manifests    │         │ Zero-copy to     │    │   │
 │  │  │                │         │ pinned buffers   │    │   │
 │  │  └────────────────┘         └──────────────────┘    │   │
-│  └──────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
+│  └─────────────────────────────────────────────────────┘   │
+└────────────────────────────────────────────────────────────┘
 ```
 
 **Key Insight**: CRT client handles control operations (10% of operations) including endpoint discovery, while io_uring handles data operations (90% of bytes).
