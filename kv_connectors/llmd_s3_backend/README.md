@@ -12,6 +12,52 @@ This backend provides a cloud-native offloading layer for vLLM, moving KV-cache 
 
 The S3 connector stores each KV cache block as a separate S3 object, organized under structured key prefixes for efficient lookup and retrieval.
 
+## Architecture
+
+```
+vLLM Scheduler
+     │
+     ▼
+┌──────────────────────────────────────────────────┐
+│  S3OffloadingSpec                                 │
+│  Reads config, creates manager + worker handlers  │
+└──────────┬───────────────────────────┬───────────┘
+           │                           │
+           ▼                           ▼
+┌─────────────────────┐   ┌──────────────────────────────┐
+│  S3OffloadingManager │   │  Worker Handlers              │
+│                      │   │                               │
+│  - lookup (HEAD)     │   │  GPUS3OffloadingHandler (PUT)  │
+│  - prepare_load      │   │    GPU → CPU copy              │
+│  - prepare_store     │   │    serialize (numpy)           │
+│  - presence cache    │   │    S3 PUT via thread pool      │
+│  - manifest sync     │   │                               │
+└──────────┬───────────┘   │  S3GPUOffloadingHandler (GET)  │
+           │               │    S3 GET via thread pool      │
+           │               │    deserialize (numpy)         │
+           │               │    CPU → GPU copy              │
+           │               └──────────────┬────────────────┘
+           │                              │
+           ▼                              ▼
+      ┌──────────────────────────────────────┐
+      │  S3ClientWrapper (boto3)              │
+      │  put_object / get_object / head /     │
+      │  list / delete / conditional PUT      │
+      └──────────────────┬───────────────────┘
+                         │
+                         ▼
+                    S3 / Ceph
+```
+
+**Data flow — store (GPU → S3):**
+vLLM evicts blocks → `GPUS3OffloadingHandler` copies block tensors from GPU
+to CPU staging memory, serializes them with numpy, and uploads to S3 via a
+thread pool.
+
+**Data flow — load (S3 → GPU):**
+vLLM requests cached blocks → `S3GPUOffloadingHandler` downloads the object
+from S3, deserializes the numpy archive, and copies tensors back to GPU.
+
 ## System Requirements
 - vLLM version 0.17.1 or above, which includes the Offloading Connector
 - Python 3.12+ (required by vLLM 0.17.1)
@@ -35,6 +81,42 @@ cd llm-d-kv-cache-manager/kv_connectors/llmd_s3_backend
 pip install -e .
 ```
 
+## Quickstart
+
+Get running in three steps:
+
+1. **Install the connector** into your vLLM environment:
+   ```bash
+   pip install git+https://github.com/llm-d/llm-d-kv-cache-manager.git#subdirectory=kv_connectors/llmd_s3_backend
+   ```
+
+2. **Ensure S3 access** — set credentials via environment, `~/.aws/credentials`,
+   or IAM role, and create a bucket:
+   ```bash
+   aws s3 mb s3://my-kv-cache-bucket --region us-west-2
+   ```
+
+3. **Start vLLM** with the S3 backend:
+   ```bash
+   vllm serve your-model \
+     --kv-transfer-config '{
+       "kv_connector": "OffloadingConnector",
+       "kv_role": "kv_both",
+       "kv_connector_extra_config": {
+         "spec_name": "S3OffloadingSpec",
+         "spec_module_path": "llmd_s3_backend.spec",
+         "s3_bucket": "my-kv-cache-bucket",
+         "s3_region": "us-west-2"
+       }
+     }' \
+     --distributed-executor-backend mp
+   ```
+
+That's it — KV cache blocks will be offloaded to and loaded from S3
+automatically. See the sections below for tuning, Ceph support, and
+advanced options. For local development with Ceph, see the
+[Testing Guide](./docs/TESTING.md#local-ceph-container-development-testing).
+
 ## Configuration
 
 ### Connector Parameters
@@ -46,7 +128,7 @@ pip install -e .
 - `s3_endpoint_url`: Custom S3 endpoint URL for S3-compatible services
 - `s3_addressing_style`: S3 addressing style - "auto", "path", or "virtual" (default: "auto")
 - `s3_profile_name`: AWS profile name from credentials file
-- `block_size`: Number of GPU blocks grouped into each S3 object
+- `block_size`: Number of GPU blocks grouped into each S3 object (default: same as vLLM's `cache_config.block_size`). Must be a multiple of the GPU block size. Larger values mean fewer, bigger S3 objects
 - `threads_per_gpu`: Number of I/O threads per GPU
 - `max_staging_memory_gb`: Total staging memory limit in GB
 

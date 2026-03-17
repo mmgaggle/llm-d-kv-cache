@@ -63,6 +63,11 @@ class S3OffloadingSpec(OffloadingSpec):
                 Default: ``"auto"``.
             s3_profile_name (str | None): AWS named profile from
                 credentials file.
+            block_size (int): Number of GPU blocks grouped into each
+                S3 object (the "offloaded block size").  Must be a
+                multiple of the GPU block size from
+                ``cache_config.block_size``.
+                Default: same as the GPU block size.
             threads_per_gpu (int): Worker threads per GPU for async
                 transfers. Capped at 64. Default: ``64``.
             max_staging_memory_gb (int): Maximum pinned staging memory
