@@ -121,9 +121,135 @@ class TestS3ClientWrapper:
         mock_client.head_object.side_effect = error
 
         client = S3ClientWrapper(bucket="test-bucket")
-        # Note: This test needs adjustment based on actual boto3 exception handling
-        # For now, we'll skip the assertion
-        # assert client.object_exists("test-key") is False
+        assert client.object_exists("test-key") is False
+
+    @patch("llmd_s3_backend.s3_client.boto3.Session")
+    def test_object_exists_reraises_non_404(self, mock_session):
+        """Test that object_exists reraises non-404 errors."""
+        mock_client = MagicMock()
+        mock_session.return_value.client.return_value = mock_client
+
+        error = Exception("Access Denied")
+        error.response = {"Error": {"Code": "403"}}
+        mock_client.exceptions.ClientError = Exception
+        mock_client.head_object.side_effect = error
+
+        client = S3ClientWrapper(bucket="test-bucket")
+        with pytest.raises(Exception, match="Access Denied"):
+            client.object_exists("test-key")
+
+    @patch("llmd_s3_backend.s3_client.boto3.Session")
+    def test_put_object(self, mock_session):
+        """Test uploading data to S3."""
+        mock_client = MagicMock()
+        mock_session.return_value.client.return_value = mock_client
+
+        client = S3ClientWrapper(bucket="test-bucket")
+        client.put_object("path/to/key.bin", b"binary-data")
+
+        mock_client.put_object.assert_called_once_with(
+            Bucket="test-bucket", Key="path/to/key.bin", Body=b"binary-data"
+        )
+
+    @patch("llmd_s3_backend.s3_client.boto3.Session")
+    def test_get_object(self, mock_session):
+        """Test downloading data from S3."""
+        mock_client = MagicMock()
+        mock_session.return_value.client.return_value = mock_client
+
+        mock_body = MagicMock()
+        mock_body.read.return_value = b"returned-data"
+        mock_client.get_object.return_value = {"Body": mock_body}
+
+        client = S3ClientWrapper(bucket="test-bucket")
+        data = client.get_object("path/to/key.bin")
+
+        assert data == b"returned-data"
+        mock_client.get_object.assert_called_once_with(
+            Bucket="test-bucket", Key="path/to/key.bin"
+        )
+
+    @patch("llmd_s3_backend.s3_client.boto3.Session")
+    def test_get_object_with_etag(self, mock_session):
+        """Test downloading data with ETag."""
+        mock_client = MagicMock()
+        mock_session.return_value.client.return_value = mock_client
+
+        mock_body = MagicMock()
+        mock_body.read.return_value = b"data"
+        mock_client.get_object.return_value = {
+            "Body": mock_body,
+            "ETag": '"abc123"',
+        }
+
+        client = S3ClientWrapper(bucket="test-bucket")
+        data, etag = client.get_object_with_etag("key")
+
+        assert data == b"data"
+        assert etag == "abc123"  # Quotes stripped
+
+    @patch("llmd_s3_backend.s3_client.boto3.Session")
+    def test_put_object_if_match(self, mock_session):
+        """Test conditional PUT with ETag."""
+        mock_client = MagicMock()
+        mock_session.return_value.client.return_value = mock_client
+
+        client = S3ClientWrapper(bucket="test-bucket")
+        client.put_object_if_match("key", b"new-data", "abc123")
+
+        mock_client.put_object.assert_called_once_with(
+            Bucket="test-bucket", Key="key", Body=b"new-data", IfMatch="abc123"
+        )
+
+    @patch("llmd_s3_backend.s3_client.boto3.Session")
+    def test_delete_object(self, mock_session):
+        """Test deleting an object from S3."""
+        mock_client = MagicMock()
+        mock_session.return_value.client.return_value = mock_client
+
+        client = S3ClientWrapper(bucket="test-bucket")
+        client.delete_object("path/to/key.bin")
+
+        mock_client.delete_object.assert_called_once_with(
+            Bucket="test-bucket", Key="path/to/key.bin"
+        )
+
+    @patch("llmd_s3_backend.s3_client.boto3.Session")
+    def test_list_objects(self, mock_session):
+        """Test listing objects with a prefix."""
+        mock_client = MagicMock()
+        mock_session.return_value.client.return_value = mock_client
+
+        mock_paginator = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = [
+            {"Contents": [{"Key": "prefix/a.bin"}, {"Key": "prefix/b.bin"}]},
+            {"Contents": [{"Key": "prefix/c.bin"}]},
+        ]
+
+        client = S3ClientWrapper(bucket="test-bucket")
+        keys = client.list_objects("prefix/")
+
+        assert keys == ["prefix/a.bin", "prefix/b.bin", "prefix/c.bin"]
+        mock_client.get_paginator.assert_called_once_with("list_objects_v2")
+        mock_paginator.paginate.assert_called_once_with(
+            Bucket="test-bucket", Prefix="prefix/"
+        )
+
+    @patch("llmd_s3_backend.s3_client.boto3.Session")
+    def test_list_objects_empty(self, mock_session):
+        """Test listing objects when prefix matches nothing."""
+        mock_client = MagicMock()
+        mock_session.return_value.client.return_value = mock_client
+
+        mock_paginator = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = [{}]  # No 'Contents' key
+
+        client = S3ClientWrapper(bucket="test-bucket")
+        keys = client.list_objects("empty/")
+
+        assert keys == []
 
 
 class TestS3OffloadingManager:
@@ -227,21 +353,225 @@ class TestS3OffloadingManager:
         assert len(output.block_hashes_evicted) == 0
         assert isinstance(output.store_spec, S3LoadStoreSpec)
 
+    @patch("llmd_s3_backend.manager.S3ClientWrapper")
+    def test_touch_is_noop(self, mock_client_class):
+        """Test that touch is a no-op for S3."""
+        manager = S3OffloadingManager(
+            model_name="test-model",
+            tp_size=1,
+            tp_rank=0,
+            dtype=torch.float16,
+            bucket="test-bucket",
+        )
 
-# ----------------------------
-# Integration-style tests (require moto or real S3)
-# ----------------------------
-@pytest.mark.skip(reason="Requires moto or real S3 setup")
-class TestS3Integration:
-    """Integration tests for S3 backend (requires moto)."""
+        hashes = [get_prefix_hash(range(100, 117))]
+        # Should not raise
+        manager.touch(hashes)
 
-    def test_roundtrip(self):
-        """Test full roundtrip: GPU -> S3 -> GPU."""
-        # This would require:
-        # 1. Setting up moto S3 mock
-        # 2. Creating dummy GPU tensors
-        # 3. Testing PUT and GET operations
-        # 4. Verifying data integrity
-        pass
+    @patch("llmd_s3_backend.manager.S3ClientWrapper")
+    def test_complete_load_is_noop(self, mock_client_class):
+        """Test that complete_load is a no-op for S3."""
+        manager = S3OffloadingManager(
+            model_name="test-model",
+            tp_size=1,
+            tp_rank=0,
+            dtype=torch.float16,
+            bucket="test-bucket",
+        )
 
-# Made with Bob
+        hashes = [get_prefix_hash(range(100, 117))]
+        # Should not raise
+        manager.complete_load(hashes)
+
+    @patch("llmd_s3_backend.manager.S3ClientWrapper")
+    def test_complete_store_updates_presence_cache(self, mock_client_class):
+        """Test that complete_store adds blocks to presence cache."""
+        manager = S3OffloadingManager(
+            model_name="test-model",
+            tp_size=1,
+            tp_rank=0,
+            dtype=torch.float16,
+            bucket="test-bucket",
+        )
+
+        # Manually set up a presence cache (bypass manifest init)
+        from llmd_s3_backend.lru_cache import LRUPresenceCache
+        manager._presence_cache = LRUPresenceCache(max_size=100)
+
+        hashes = [get_prefix_hash(range(100, 117)), get_prefix_hash(range(200, 217))]
+        manager.complete_store(hashes, success=True)
+
+        assert len(manager._presence_cache) == 2
+        for h in hashes:
+            assert str(h) in manager._presence_cache
+
+    @patch("llmd_s3_backend.manager.S3ClientWrapper")
+    def test_complete_store_skips_on_failure(self, mock_client_class):
+        """Test that complete_store does nothing when success=False."""
+        manager = S3OffloadingManager(
+            model_name="test-model",
+            tp_size=1,
+            tp_rank=0,
+            dtype=torch.float16,
+            bucket="test-bucket",
+        )
+
+        from llmd_s3_backend.lru_cache import LRUPresenceCache
+        manager._presence_cache = LRUPresenceCache(max_size=100)
+
+        hashes = [get_prefix_hash(range(100, 117))]
+        manager.complete_store(hashes, success=False)
+
+        assert len(manager._presence_cache) == 0
+
+    @patch("llmd_s3_backend.manager.S3ClientWrapper")
+    def test_complete_store_no_cache(self, mock_client_class):
+        """Test that complete_store works when presence cache is disabled."""
+        manager = S3OffloadingManager(
+            model_name="test-model",
+            tp_size=1,
+            tp_rank=0,
+            dtype=torch.float16,
+            bucket="test-bucket",
+            enable_presence_cache=False,
+        )
+
+        hashes = [get_prefix_hash(range(100, 117))]
+        # Should not raise
+        manager.complete_store(hashes, success=True)
+
+    @patch("llmd_s3_backend.manager.S3ClientWrapper")
+    def test_complete_store_updates_manifest(self, mock_client_class):
+        """Test that complete_store queues blocks in manifest manager."""
+        manager = S3OffloadingManager(
+            model_name="test-model",
+            tp_size=1,
+            tp_rank=0,
+            dtype=torch.float16,
+            bucket="test-bucket",
+        )
+
+        mock_manifest = MagicMock()
+        manager._manifest_manager = mock_manifest
+
+        hashes = [get_prefix_hash(range(100, 117))]
+        manager.complete_store(hashes, success=True)
+
+        mock_manifest.queue_add_blocks.assert_called_once()
+        call_args = mock_manifest.queue_add_blocks.call_args
+        assert call_args[0][0] == hashes
+
+    @patch("llmd_s3_backend.manager.S3ClientWrapper")
+    def test_invalidate_cache_entry(self, mock_client_class):
+        """Test lazy invalidation of a presence cache entry."""
+        manager = S3OffloadingManager(
+            model_name="test-model",
+            tp_size=1,
+            tp_rank=0,
+            dtype=torch.float16,
+            bucket="test-bucket",
+        )
+
+        from llmd_s3_backend.lru_cache import LRUPresenceCache
+        manager._presence_cache = LRUPresenceCache(max_size=100)
+
+        # Add an entry, then invalidate it
+        manager._presence_cache.add("block_abc")
+        assert "block_abc" in manager._presence_cache
+
+        manager.invalidate_cache_entry("block_abc")
+        assert "block_abc" not in manager._presence_cache
+
+    @patch("llmd_s3_backend.manager.S3ClientWrapper")
+    def test_invalidate_cache_entry_nonexistent(self, mock_client_class):
+        """Test invalidating a key that isn't in the cache."""
+        manager = S3OffloadingManager(
+            model_name="test-model",
+            tp_size=1,
+            tp_rank=0,
+            dtype=torch.float16,
+            bucket="test-bucket",
+        )
+
+        from llmd_s3_backend.lru_cache import LRUPresenceCache
+        manager._presence_cache = LRUPresenceCache(max_size=100)
+
+        # Should not raise
+        manager.invalidate_cache_entry("nonexistent")
+
+    @patch("llmd_s3_backend.manager.S3ClientWrapper")
+    def test_invalidate_cache_entry_no_cache(self, mock_client_class):
+        """Test invalidation when presence cache is disabled."""
+        manager = S3OffloadingManager(
+            model_name="test-model",
+            tp_size=1,
+            tp_rank=0,
+            dtype=torch.float16,
+            bucket="test-bucket",
+            enable_presence_cache=False,
+        )
+
+        # Should not raise
+        manager.invalidate_cache_entry("block_abc")
+
+    @patch("llmd_s3_backend.manager.S3ClientWrapper")
+    def test_lookup_with_presence_cache(self, mock_client_class):
+        """Test lookup uses presence cache when enabled."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        manager = S3OffloadingManager(
+            model_name="test-model",
+            tp_size=1,
+            tp_rank=0,
+            dtype=torch.float16,
+            bucket="test-bucket",
+        )
+
+        from llmd_s3_backend.lru_cache import LRUPresenceCache
+        manager._presence_cache = LRUPresenceCache(max_size=100)
+
+        hashes = [
+            get_prefix_hash(range(100, 117)),
+            get_prefix_hash(range(200, 217)),
+        ]
+
+        # Pre-populate cache with first hash
+        manager._presence_cache.add(str(hashes[0]))
+
+        # Second hash not in cache, found in S3
+        mock_client.object_exists.return_value = True
+
+        hit_count = manager.lookup(hashes)
+        assert hit_count == 2
+
+        # First hash should have been a cache hit (no S3 call needed for it)
+        # Second hash triggers an S3 HEAD and gets added to cache
+        assert mock_client.object_exists.call_count == 1
+        assert str(hashes[1]) in manager._presence_cache
+
+    @patch("llmd_s3_backend.manager.S3ClientWrapper")
+    def test_lookup_stops_at_first_miss(self, mock_client_class):
+        """Test that lookup stops counting at the first miss."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_client.object_exists.side_effect = [True, False, True]
+
+        manager = S3OffloadingManager(
+            model_name="test-model",
+            tp_size=1,
+            tp_rank=0,
+            dtype=torch.float16,
+            bucket="test-bucket",
+        )
+
+        hashes = [
+            get_prefix_hash(range(100, 117)),
+            get_prefix_hash(range(200, 217)),
+            get_prefix_hash(range(300, 317)),
+        ]
+
+        hit_count = manager.lookup(hashes)
+        assert hit_count == 1
+        # Should not check the third hash after the second misses
+        assert mock_client.object_exists.call_count == 2
