@@ -18,13 +18,13 @@ The S3 connector stores each KV cache block as a separate S3 object, organized u
 vLLM Scheduler
      │
      ▼
-┌──────────────────────────────────────────────────┐
-│  S3OffloadingSpec                                 │
-│  Reads config, creates manager + worker handlers  │
-└──────────┬───────────────────────────┬───────────┘
+┌──────────────────────────────────────────────────────────┐
+│  S3OffloadingSpec                                        │
+│  Reads config, creates manager + worker handlers         │
+└──────────┬───────────────────────────┬───────────────────┘
            │                           │
            ▼                           ▼
-┌──────────────────────┐   ┌───────√───────────────────────┐
+┌──────────────────────┐   ┌───────────────────────────────┐
 │  S3OffloadingManager │   │  Worker Handlers              │
 │                      │   │                               │
 │  - lookup (HEAD)     │   │  GPUS3OffloadingHandler (PUT) │
