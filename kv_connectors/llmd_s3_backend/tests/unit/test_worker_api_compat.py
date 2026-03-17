@@ -24,7 +24,7 @@ in version 0.17.1, including:
 
 NOTE: These are NOT end-to-end integration tests. They use mocks to verify
 API compatibility without requiring real S3, GPU, or io_uring operations.
-For real integration tests, see test_iouring_live.py.
+For real integration tests, see tests/integration/test_iouring_live.py.
 
 For unit tests of individual components, see:
 - test_pinned_buffers.py (8/8 tests passing)

@@ -22,43 +22,18 @@ import torch
 from unittest.mock import Mock, MagicMock, patch, PropertyMock
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-@pytest.fixture
-def mock_s3_client():
-    """Mock S3ClientWrapper."""
-    client = MagicMock()
-    client.put_object = MagicMock()
-    client.get_object = MagicMock()
-    return client
 
-
-@pytest.fixture
-def mock_attn_backends():
-    """Mock attention backends with shape (2, num_blocks, heads, block_size, head_dim)."""
-    backend = Mock()
-    backend.get_kv_cache_shape = Mock(return_value=(2, 1234, 8, 16, 256))
-    return {"layer_0": backend, "layer_1": backend}
-
-
-@pytest.fixture
-def mock_cuda_stream():
-    """Mock CUDA stream."""
-    return Mock()
-
-
-def _make_gpu_tensor(num_blocks=100, num_heads=8, block_size=16, head_dim=256):
+def make_gpu_tensor(num_blocks=100, num_heads=8, block_size=16, head_dim=256):
     """Create a CPU tensor shaped like a KV cache (simulating GPU)."""
     return torch.randn(2, num_blocks, num_heads, block_size, head_dim, dtype=torch.float16)
 
 
-def _make_kv_caches(num_layers=2, **kwargs):
+def make_kv_caches(num_layers=2, **kwargs):
     """Create dict of mock KV cache tensors."""
-    return {f"layer_{i}": _make_gpu_tensor(**kwargs) for i in range(num_layers)}
+    return {f"layer_{i}": make_gpu_tensor(**kwargs) for i in range(num_layers)}
 
 
-def _serialize_blocks(blocks_data):
+def serialize_blocks(blocks_data):
     """Serialize block data the same way the PUT handler does."""
     buf = io.BytesIO()
     np.savez_compressed(buf, *[b.numpy() for b in blocks_data])
@@ -100,7 +75,7 @@ class TestS3OffloadingHandlerInit:
     @patch("llmd_s3_backend.worker.S3ClientWrapper")
     def test_basic_attributes(self, mock_client_cls, mock_stream, mock_attn_backends):
         HandlerCls = _make_concrete_put_handler_cls()
-        kv_caches = _make_kv_caches(num_layers=2)
+        kv_caches = make_kv_caches(num_layers=2)
         handler = HandlerCls(
             model_name="llama-7b",
             tp_size=4,
@@ -127,7 +102,7 @@ class TestS3OffloadingHandlerInit:
         from llmd_s3_backend.worker import DEFAULT_MAX_THREADS_PER_GPU
         HandlerCls = _make_concrete_put_handler_cls()
 
-        kv_caches = _make_kv_caches(num_layers=1)
+        kv_caches = make_kv_caches(num_layers=1)
         handler = HandlerCls(
             model_name="m",
             tp_size=1,
@@ -145,7 +120,7 @@ class TestS3OffloadingHandlerInit:
     @patch("llmd_s3_backend.worker.S3ClientWrapper")
     def test_base_key_format(self, mock_client_cls, mock_stream, mock_attn_backends):
         HandlerCls = _make_concrete_put_handler_cls()
-        kv_caches = _make_kv_caches(num_layers=1)
+        kv_caches = make_kv_caches(num_layers=1)
         handler = HandlerCls(
             model_name="gpt2",
             tp_size=2,
@@ -167,7 +142,7 @@ class TestGetS3Key:
     @patch("llmd_s3_backend.worker.S3ClientWrapper")
     def test_integer_block_hash(self, mock_client_cls, mock_stream, mock_attn_backends):
         HandlerCls = _make_concrete_put_handler_cls()
-        kv_caches = _make_kv_caches(num_layers=1)
+        kv_caches = make_kv_caches(num_layers=1)
         handler = HandlerCls(
             model_name="m", tp_size=1, tp_rank=0,
             kv_caches=kv_caches, gpu_blocks_per_file=1,
@@ -181,7 +156,7 @@ class TestGetS3Key:
     @patch("llmd_s3_backend.worker.S3ClientWrapper")
     def test_bytes_block_hash(self, mock_client_cls, mock_stream, mock_attn_backends):
         HandlerCls = _make_concrete_put_handler_cls()
-        kv_caches = _make_kv_caches(num_layers=1)
+        kv_caches = make_kv_caches(num_layers=1)
         handler = HandlerCls(
             model_name="m", tp_size=1, tp_rank=0,
             kv_caches=kv_caches, gpu_blocks_per_file=1,
@@ -197,7 +172,7 @@ class TestGetS3Key:
     @patch("llmd_s3_backend.worker.S3ClientWrapper")
     def test_key_has_hierarchical_structure(self, mock_client_cls, mock_stream, mock_attn_backends):
         HandlerCls = _make_concrete_put_handler_cls()
-        kv_caches = _make_kv_caches(num_layers=1)
+        kv_caches = make_kv_caches(num_layers=1)
         handler = HandlerCls(
             model_name="m", tp_size=1, tp_rank=0,
             kv_caches=kv_caches, gpu_blocks_per_file=1,
@@ -217,7 +192,7 @@ class TestGetFinished:
     @patch("llmd_s3_backend.worker.S3ClientWrapper")
     def test_empty_when_nothing_completed(self, mock_client_cls, mock_stream, mock_attn_backends):
         HandlerCls = _make_concrete_put_handler_cls()
-        kv_caches = _make_kv_caches(num_layers=1)
+        kv_caches = make_kv_caches(num_layers=1)
         handler = HandlerCls(
             model_name="m", tp_size=1, tp_rank=0,
             kv_caches=kv_caches, gpu_blocks_per_file=1,
@@ -229,7 +204,7 @@ class TestGetFinished:
     @patch("llmd_s3_backend.worker.S3ClientWrapper")
     def test_returns_and_clears_completed(self, mock_client_cls, mock_stream, mock_attn_backends):
         HandlerCls = _make_concrete_put_handler_cls()
-        kv_caches = _make_kv_caches(num_layers=1)
+        kv_caches = make_kv_caches(num_layers=1)
         handler = HandlerCls(
             model_name="m", tp_size=1, tp_rank=0,
             kv_caches=kv_caches, gpu_blocks_per_file=1,
@@ -262,7 +237,7 @@ class TestGetKvCacheParameters:
         gpu_tensor = Mock()
         gpu_tensor.shape = (2, 500, 8, 16, 256)
 
-        kv_caches = _make_kv_caches(num_layers=1)
+        kv_caches = make_kv_caches(num_layers=1)
         handler = HandlerCls(
             model_name="m", tp_size=1, tp_rank=0,
             kv_caches=kv_caches, gpu_blocks_per_file=1,
@@ -288,7 +263,7 @@ class TestGetKvCacheParameters:
         gpu_tensor = Mock()
         gpu_tensor.shape = (500, 8, 16, 256)
 
-        kv_caches = _make_kv_caches(num_layers=1)
+        kv_caches = make_kv_caches(num_layers=1)
         handler = HandlerCls(
             model_name="m", tp_size=1, tp_rank=0,
             kv_caches=kv_caches, gpu_blocks_per_file=1,
@@ -313,7 +288,7 @@ class TestPutBlocksToS3:
     @patch("llmd_s3_backend.worker.S3ClientWrapper")
     def test_successful_upload(self, mock_client_cls, mock_stream, mock_attn_backends):
         HandlerCls = _make_concrete_put_handler_cls()
-        kv_caches = _make_kv_caches(num_layers=2, num_blocks=50)
+        kv_caches = make_kv_caches(num_layers=2, num_blocks=50)
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
 
@@ -343,7 +318,7 @@ class TestPutBlocksToS3:
     @patch("llmd_s3_backend.worker.S3ClientWrapper")
     def test_upload_failure_returns_false(self, mock_client_cls, mock_stream, mock_attn_backends):
         HandlerCls = _make_concrete_put_handler_cls()
-        kv_caches = _make_kv_caches(num_layers=1, num_blocks=10)
+        kv_caches = make_kv_caches(num_layers=1, num_blocks=10)
         mock_client = MagicMock()
         mock_client.put_object.side_effect = RuntimeError("network error")
         mock_client_cls.return_value = mock_client
@@ -372,7 +347,7 @@ class TestGPUS3TransferAsync:
     @patch("llmd_s3_backend.worker.S3ClientWrapper")
     def test_empty_spec_returns_true(self, mock_client_cls, mock_stream, mock_attn_backends):
         HandlerCls = _make_concrete_put_handler_cls()
-        kv_caches = _make_kv_caches(num_layers=1, num_blocks=10)
+        kv_caches = make_kv_caches(num_layers=1, num_blocks=10)
         handler = HandlerCls(
             model_name="m", tp_size=1, tp_rank=0,
             kv_caches=kv_caches, gpu_blocks_per_file=4,
@@ -393,7 +368,7 @@ class TestGPUS3TransferAsync:
     @patch("llmd_s3_backend.worker.S3ClientWrapper")
     def test_none_dst_spec_returns_true(self, mock_client_cls, mock_stream, mock_attn_backends):
         HandlerCls = _make_concrete_put_handler_cls()
-        kv_caches = _make_kv_caches(num_layers=1, num_blocks=10)
+        kv_caches = make_kv_caches(num_layers=1, num_blocks=10)
         handler = HandlerCls(
             model_name="m", tp_size=1, tp_rank=0,
             kv_caches=kv_caches, gpu_blocks_per_file=4,
@@ -409,7 +384,7 @@ class TestGPUS3TransferAsync:
     @patch("llmd_s3_backend.worker.S3ClientWrapper")
     def test_submits_futures(self, mock_client_cls, mock_stream, mock_attn_backends):
         HandlerCls = _make_concrete_put_handler_cls()
-        kv_caches = _make_kv_caches(num_layers=1, num_blocks=20)
+        kv_caches = make_kv_caches(num_layers=1, num_blocks=20)
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
 
@@ -446,14 +421,14 @@ class TestGetBlocksFromS3:
     def test_successful_download(self, mock_client_cls, mock_stream, mock_attn_backends):
         from llmd_s3_backend.worker import S3GPUOffloadingHandler
 
-        kv_caches = _make_kv_caches(num_layers=2, num_blocks=50)
+        kv_caches = make_kv_caches(num_layers=2, num_blocks=50)
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
 
         # Prepare serialized data that matches what GET expects
         block_ids = [0, 1]
         blocks_data = [t[:, block_ids, :, :, :] for t in kv_caches.values()]
-        serialized = _serialize_blocks(blocks_data)
+        serialized = serialize_blocks(blocks_data)
         mock_client.get_object.return_value = serialized
 
         handler = S3GPUOffloadingHandler(
@@ -477,7 +452,7 @@ class TestGetBlocksFromS3:
     def test_download_failure_returns_false(self, mock_client_cls, mock_stream, mock_attn_backends):
         from llmd_s3_backend.worker import S3GPUOffloadingHandler
 
-        kv_caches = _make_kv_caches(num_layers=1, num_blocks=10)
+        kv_caches = make_kv_caches(num_layers=1, num_blocks=10)
         mock_client = MagicMock()
         mock_client.get_object.side_effect = RuntimeError("connection refused")
         mock_client_cls.return_value = mock_client
@@ -502,7 +477,7 @@ class TestGetBlocksFromS3:
     def test_404_triggers_cache_invalidation(self, mock_client_cls, mock_stream, mock_attn_backends):
         from llmd_s3_backend.worker import S3GPUOffloadingHandler
 
-        kv_caches = _make_kv_caches(num_layers=1, num_blocks=10)
+        kv_caches = make_kv_caches(num_layers=1, num_blocks=10)
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
 
@@ -535,7 +510,7 @@ class TestGetBlocksFromS3:
         """Verify that data downloaded from S3 is correctly written to tensors."""
         from llmd_s3_backend.worker import S3GPUOffloadingHandler
 
-        kv_caches = _make_kv_caches(num_layers=1, num_blocks=10)
+        kv_caches = make_kv_caches(num_layers=1, num_blocks=10)
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
 
@@ -543,7 +518,7 @@ class TestGetBlocksFromS3:
         block_ids = [0, 1]
         original_tensors = list(kv_caches.values())
         source_data = [t[:, block_ids, :, :, :].clone() for t in original_tensors]
-        serialized = _serialize_blocks(source_data)
+        serialized = serialize_blocks(source_data)
         mock_client.get_object.return_value = serialized
 
         # Zero out the target blocks before download
@@ -579,7 +554,7 @@ class TestS3GPUTransferAsync:
     def test_empty_src_spec_returns_true(self, mock_client_cls, mock_stream, mock_attn_backends):
         from llmd_s3_backend.worker import S3GPUOffloadingHandler
 
-        kv_caches = _make_kv_caches(num_layers=1, num_blocks=10)
+        kv_caches = make_kv_caches(num_layers=1, num_blocks=10)
         handler = S3GPUOffloadingHandler(
             model_name="m", tp_size=1, tp_rank=0, dtype=torch.float16,
             gpu_blocks_per_file=4, kv_caches=kv_caches,
@@ -599,7 +574,7 @@ class TestS3GPUTransferAsync:
     def test_none_src_spec_returns_true(self, mock_client_cls, mock_stream, mock_attn_backends):
         from llmd_s3_backend.worker import S3GPUOffloadingHandler
 
-        kv_caches = _make_kv_caches(num_layers=1, num_blocks=10)
+        kv_caches = make_kv_caches(num_layers=1, num_blocks=10)
         handler = S3GPUOffloadingHandler(
             model_name="m", tp_size=1, tp_rank=0, dtype=torch.float16,
             gpu_blocks_per_file=4, kv_caches=kv_caches,
@@ -615,14 +590,14 @@ class TestS3GPUTransferAsync:
     def test_submits_get_jobs(self, mock_client_cls, mock_stream, mock_attn_backends):
         from llmd_s3_backend.worker import S3GPUOffloadingHandler
 
-        kv_caches = _make_kv_caches(num_layers=1, num_blocks=20)
+        kv_caches = make_kv_caches(num_layers=1, num_blocks=20)
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
 
         # Prepare valid download data
         block_ids = [0, 1, 2, 3]
         blocks_data = [t[:, block_ids, :, :, :] for t in kv_caches.values()]
-        serialized = _serialize_blocks(blocks_data)
+        serialized = serialize_blocks(blocks_data)
         mock_client.get_object.return_value = serialized
 
         handler = S3GPUOffloadingHandler(
@@ -651,7 +626,7 @@ class TestS3GPUWait:
     def test_wait_nonexistent_job_returns_true(self, mock_client_cls, mock_stream, mock_attn_backends):
         from llmd_s3_backend.worker import S3GPUOffloadingHandler
 
-        kv_caches = _make_kv_caches(num_layers=1, num_blocks=10)
+        kv_caches = make_kv_caches(num_layers=1, num_blocks=10)
         handler = S3GPUOffloadingHandler(
             model_name="m", tp_size=1, tp_rank=0, dtype=torch.float16,
             gpu_blocks_per_file=4, kv_caches=kv_caches,
@@ -666,7 +641,7 @@ class TestS3GPUWait:
         from llmd_s3_backend.worker import S3GPUOffloadingHandler
         from concurrent.futures import Future
 
-        kv_caches = _make_kv_caches(num_layers=1, num_blocks=10)
+        kv_caches = make_kv_caches(num_layers=1, num_blocks=10)
         handler = S3GPUOffloadingHandler(
             model_name="m", tp_size=1, tp_rank=0, dtype=torch.float16,
             gpu_blocks_per_file=4, kv_caches=kv_caches,
@@ -689,7 +664,7 @@ class TestS3GPUGetFinished:
     def test_returns_and_clears(self, mock_client_cls, mock_stream, mock_attn_backends):
         from llmd_s3_backend.worker import S3GPUOffloadingHandler
 
-        kv_caches = _make_kv_caches(num_layers=1, num_blocks=10)
+        kv_caches = make_kv_caches(num_layers=1, num_blocks=10)
         handler = S3GPUOffloadingHandler(
             model_name="m", tp_size=1, tp_rank=0, dtype=torch.float16,
             gpu_blocks_per_file=4, kv_caches=kv_caches,
@@ -710,7 +685,7 @@ class TestS3GPUInitIoUring:
     def test_iouring_disabled_by_default(self, mock_client_cls, mock_stream, mock_attn_backends):
         from llmd_s3_backend.worker import S3GPUOffloadingHandler
 
-        kv_caches = _make_kv_caches(num_layers=1, num_blocks=10)
+        kv_caches = make_kv_caches(num_layers=1, num_blocks=10)
         handler = S3GPUOffloadingHandler(
             model_name="m", tp_size=1, tp_rank=0, dtype=torch.float16,
             gpu_blocks_per_file=4, kv_caches=kv_caches,
@@ -726,7 +701,7 @@ class TestS3GPUInitIoUring:
     def test_iouring_fallback_when_unavailable(self, mock_client_cls, mock_stream, mock_attn_backends):
         from llmd_s3_backend.worker import S3GPUOffloadingHandler
 
-        kv_caches = _make_kv_caches(num_layers=1, num_blocks=10)
+        kv_caches = make_kv_caches(num_layers=1, num_blocks=10)
         handler = S3GPUOffloadingHandler(
             model_name="m", tp_size=1, tp_rank=0, dtype=torch.float16,
             gpu_blocks_per_file=4, kv_caches=kv_caches,
@@ -744,7 +719,7 @@ class TestHandlerCleanup:
     @patch("llmd_s3_backend.worker.S3ClientWrapper")
     def test_del_shuts_down_executor(self, mock_client_cls, mock_stream, mock_attn_backends):
         HandlerCls = _make_concrete_put_handler_cls()
-        kv_caches = _make_kv_caches(num_layers=1)
+        kv_caches = make_kv_caches(num_layers=1)
         handler = HandlerCls(
             model_name="m", tp_size=1, tp_rank=0,
             kv_caches=kv_caches, gpu_blocks_per_file=1,

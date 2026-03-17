@@ -8,7 +8,18 @@ This directory contains integration tests for testing component interactions.
 
 ### Live S3 Tests (Require Ceph/S3 Endpoint)
 
-- **presence_cache_live.py** - ⚠️ **Requires live S3/Ceph endpoint**
+- **test_ceph.py** - ⚠️ **Requires live Ceph/S3 endpoint**
+  - Basic Ceph S3 connectivity check
+  - Verifies bucket access with configured profile/endpoint
+  - **Run manually** with S3 credentials
+
+- **test_iouring_live.py** - ⚠️ **Requires live S3/Ceph endpoint + Linux**
+  - End-to-end io_uring zero-copy transfer test
+  - Verifies pinned buffer pool, io_uring operations, and S3 auth
+  - Requires Linux kernel 5.1+ with io_uring support
+  - **Run manually** with S3 credentials
+
+- **test_test_presence_cache_live.py** - ⚠️ **Requires live S3/Ceph endpoint**
   - Manifest creation and loading
   - Conditional PUT for pointer updates
   - Multi-instance simulation
@@ -27,7 +38,7 @@ This directory contains integration tests for testing component interactions.
 
 ### Logic Tests (No External Dependencies)
 
-- **presence_cache_removal.py** - ✅ **No S3 required, runs with pytest**
+- **test_presence_cache_removal.py** - ✅ **No S3 required, runs with pytest**
   - Cache removal operations
   - Manager API verification (`invalidate_cache_entry`)
   - Manifest DELETE operation processing
@@ -39,13 +50,13 @@ This directory contains integration tests for testing component interactions.
 
 ### Live S3 Integration Tests
 
-The `presence_cache_live.py` script validates the presence cache functionality against a real Ceph S3 endpoint or AWS S3.
+The `test_presence_cache_live.py` script validates the presence cache functionality against a real Ceph S3 endpoint or AWS S3.
 
 #### Basic Usage (Ceph)
 
 ```bash
 cd kv_connectors/llmd_s3_backend
-python tests/integration/presence_cache_live.py \
+python tests/integration/test_presence_cache_live.py \
     --bucket vllm \
     --profile zgw \
     --endpoint http://your-ceph-endpoint:8080
@@ -55,7 +66,7 @@ python tests/integration/presence_cache_live.py \
 
 ```bash
 cd kv_connectors/llmd_s3_backend
-python tests/integration/presence_cache_live.py \
+python tests/integration/test_presence_cache_live.py \
     --bucket your-bucket \
     --profile your-profile \
     --region us-east-1
@@ -71,12 +82,12 @@ python tests/integration/presence_cache_live.py \
 
 ### Logic Tests (No S3 Required)
 
-The `presence_cache_removal.py` tests use NO external dependencies and can be run anywhere:
+The `test_presence_cache_removal.py` tests use NO external dependencies and can be run anywhere:
 
 ```bash
 cd kv_connectors/llmd_s3_backend
 source venv/bin/activate
-python -m pytest tests/integration/presence_cache_removal.py -v
+python -m pytest tests/integration/test_presence_cache_removal.py -v
 ```
 
 ### End-to-End Validation Script
@@ -126,7 +137,7 @@ S3_BUCKET=my-bucket S3_PROFILE=my-profile ./tests/integration/validate_s3_cache.
 
 ## Test Coverage
 
-### Live Tests (presence_cache_live.py)
+### Live Tests (test_presence_cache_live.py)
 
 1. **Basic Operations**
    - Creates ManifestManager
@@ -166,7 +177,7 @@ S3_BUCKET=my-bucket S3_PROFILE=my-profile ./tests/integration/validate_s3_cache.
    - Verifies `.avro` file extension
    - Validates deserialization
 
-### Removal Tests (presence_cache_removal.py)
+### Removal Tests (test_presence_cache_removal.py)
 
 1. **Cache Removal Operations**
    - Single and multiple block removal
@@ -269,7 +280,7 @@ Result: 7/7 tests passed
 ### Keep Test Data
 
 ```bash
-python integration/presence_cache_live.py --bucket vllm --profile zgw --no-cleanup
+python integration/test_presence_cache_live.py --bucket vllm --profile zgw --no-cleanup
 ```
 
 Then inspect files manually:
@@ -311,7 +322,8 @@ logging.basicConfig(level=logging.DEBUG)
 - These tests are **not** run as part of the standard unit test suite
 - Live tests require manual execution with proper S3 credentials
 - Removal tests use mocks and can be run with pytest
-- Tests are excluded from pytest discovery by not having the `test_` prefix (except presence_cache_removal.py)
+- All test files follow the `test_` naming convention for pytest discovery
+- Live S3 tests should be excluded from CI (they require real infrastructure)
 
 ## Next Steps
 
