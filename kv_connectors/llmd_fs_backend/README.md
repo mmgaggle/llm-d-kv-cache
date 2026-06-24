@@ -105,7 +105,7 @@ make image-fs-backend-push IMAGE_TAG_BASE=<your-base-container-registry> FS_BACK
 - `max_staging_memory_gb`: total staging memory limit
 - `max_write_queued_seconds`: maximum time budget (in seconds) for queued writes before excess writes are dropped (default: `30.0`, set to `0` to disable). The actual write queue depth limit is computed dynamically as `threads_per_gpu * max_write_queued_seconds / avg_write_duration`. For example, with 64 threads and `max_write_queued_seconds=30`: on fast NVMe storage (20ms avg write) the limit is ~96,000 (effectively unlimited), while on slow block storage (2s avg write) the limit is ~960. Dropped writes result in cache misses on future reads, not data loss.
 - `gds_mode`: GPUDirect Storage mode (default: `disabled`). See [GPUDirect Storage (GDS)](./docs/gds.md) for options, requirements, and verification.
-- `backend`: POSIX, OBJ (default: `POSIX`)
+- `backend`: `POSIX`, `OBJ`, or `MEMOS` (default: `POSIX`). `OBJ` offloads to S3-compatible object storage over NIXL (see [Object Storage Guide](./docs/object_store.md)); `MEMOS` offloads to a DOCA MEMOS NVMe key-value device over NIXL (see [DOCA MEMOS Guide](./docs/doca_memos.md)). With `MEMOS`, `block_size` is automatically capped so a packed block fits the device's max value size.
 
 ### Environment variables
 - `STORAGE_LOG_LEVEL`: set the log level for both C++ and Python (`trace`, `debug`, `info`, `warn`, `error`). Default: `info`

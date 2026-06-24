@@ -16,6 +16,12 @@
 
 from nixl._api import nixl_agent, nixl_agent_config
 
+from llmd_nixl.memos_backend import (
+    MEMOS_PLUGIN,
+    file_name_to_dev_id,
+    file_name_to_memos_key,
+    memos_backend_params,
+)
 from llmd_nixl.obj_backend import obj_key_to_dev_id
 
 
@@ -45,5 +51,30 @@ class NixlLookup:
         # query_memory returns None for a descriptor when the object does not exist.
         results = self._agent.query_memory(
             [(0, 1, obj_key_to_dev_id(key), key)], "OBJ", "OBJ"
+        )
+        return results[0] is not None
+
+
+class MemosLookup:
+    """Checks block existence on a DOCA MEMOS NVMe KV device via query_memory.
+
+    Forces ``query_mem_mode=actual`` so lookups issue real DOCA EXIST ops; the
+    backend default (``assume_success``) would report every key as present.
+    """
+
+    def __init__(self, extra_config: dict):
+        cfg = extra_config or {}
+        self._agent = nixl_agent("MemosLookup", nixl_agent_config(backends=[]))
+        backend_params = memos_backend_params(cfg)
+        backend_params["query_mem_mode"] = "actual"
+        self._agent.create_backend(MEMOS_PLUGIN, backend_params)
+
+    def exists(self, key: str) -> bool:
+        """Return True if the object identified by key exists on the device."""
+        # query_memory returns None for a descriptor when the key is absent.
+        results = self._agent.query_memory(
+            [(0, 1, file_name_to_dev_id(key), file_name_to_memos_key(key))],
+            MEMOS_PLUGIN,
+            "OBJ",
         )
         return results[0] is not None

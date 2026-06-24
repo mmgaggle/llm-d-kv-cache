@@ -19,7 +19,7 @@ from vllm.v1.kv_offload.base import OffloadKey, ReqContext
 
 from llmd_fs_backend.file_mapper import FileMapper
 from llmd_fs_backend.manager import SharedStorageOffloadingManager
-from llmd_nixl.nixl_lookup import NixlLookup
+from llmd_nixl.nixl_lookup import MemosLookup, NixlLookup
 
 logger = init_logger(__name__)
 
@@ -53,7 +53,10 @@ class NixlStorageOffloadingManager(SharedStorageOffloadingManager):
         self._nixl_lookup = None
 
         if self.lookup_mode == LOOKUP_MODE_NIXL_QUERY:
-            self._nixl_lookup = NixlLookup(cfg)
+            if cfg.get("backend") == "MEMOS":
+                self._nixl_lookup = MemosLookup(cfg)
+            else:
+                self._nixl_lookup = NixlLookup(cfg)
 
     def lookup(self, key: OffloadKey, req_context: ReqContext) -> bool | None:
         file_name = self.file_mapper.get_file_name(key)

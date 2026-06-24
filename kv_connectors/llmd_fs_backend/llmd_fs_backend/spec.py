@@ -25,6 +25,7 @@ from vllm.v1.kv_offload.base import (
 )
 from vllm.v1.kv_offload.worker.worker import OffloadingHandler
 
+from llmd_fs_backend import _logger as logger
 from llmd_fs_backend.file_mapper import FileMapper
 from llmd_fs_backend.manager import SharedStorageOffloadingManager
 from llmd_fs_backend.mediums import SharedStorageLoadStoreSpec
@@ -37,6 +38,9 @@ from llmd_fs_backend.worker import (
 )
 
 DEFAULT_STORAGE_BLOCK_SIZE = 256
+
+# Backends served by the NIXL engine (vs the C++ POSIX/GDS engine).
+NIXL_BACKENDS = ("OBJ", "MEMOS")
 
 
 class SharedStorageOffloadingSpec(OffloadingSpec):
@@ -85,6 +89,13 @@ class SharedStorageOffloadingSpec(OffloadingSpec):
         )
         self.gpu_blocks_per_file = self.offloaded_block_size // self.hash_block_size
 
+        # DOCA MEMOS stores each object as a single NVMe KV value; the controller
+        # caps the value size per op. Shrink gpu_blocks_per_file (tokens/block) so
+        # a packed object fits. Runs on every rank before the block layout is
+        # baked in below, so scheduler and workers stay in agreement.
+        if self.extra_config.get("backend") == "MEMOS":
+            self._scale_block_size_for_memos(kv_cache_config)
+
         # Derive block_size_factor from file layout instead of base class.
         self.block_size_factor = self.gpu_blocks_per_file
 
@@ -113,11 +124,95 @@ class SharedStorageOffloadingSpec(OffloadingSpec):
         )
         self.file_mapper.write_run_config()
 
+    def _memos_object_bytes_per_block(self, kv_cache_config: KVCacheConfig) -> int:
+        """Bytes one offloaded GPU block (hash_block_size tokens) occupies across
+        all layers — i.e. the per-block size of a packed DOCA MEMOS object value.
+
+        ``KVCacheSpec.page_size_bytes`` is per layer for ``spec.block_size``
+        tokens; scale to one hash_block_size-token block and sum over each group's
+        layers. Mirrors the worker's ``sum(ref.page_size_bytes ...)`` sizing.
+        """
+        total = 0
+        for group in kv_cache_config.kv_cache_groups:
+            spec = group.kv_cache_spec
+            per_layer = spec.page_size_bytes * self.hash_block_size // spec.block_size
+            total += per_layer * len(group.layer_names)
+        return total
+
+    def _scale_block_size_for_memos(self, kv_cache_config: KVCacheConfig) -> None:
+        """Shrink ``gpu_blocks_per_file`` so a packed object fits the device's
+        advertised max value size. Warns and leaves the configured block size
+        unchanged if the limit or the per-block size can't be determined."""
+        from llmd_nixl.memos_backend import query_max_value_size
+
+        max_value_size = query_max_value_size(self.extra_config)
+        if not max_value_size:
+            logger.warning(
+                "DOCA MEMOS: max value size unavailable; keeping configured "
+                "offloaded block_size=%d tokens (%d GPU blocks/object)",
+                self.offloaded_block_size,
+                self.gpu_blocks_per_file,
+            )
+            return
+
+        try:
+            per_block_bytes = self._memos_object_bytes_per_block(kv_cache_config)
+        except Exception:
+            logger.warning(
+                "DOCA MEMOS: failed to compute per-block bytes; keeping "
+                "configured block size",
+                exc_info=True,
+            )
+            return
+        if per_block_bytes <= 0:
+            logger.warning(
+                "DOCA MEMOS: per-block bytes computed as %d; keeping configured "
+                "block size",
+                per_block_bytes,
+            )
+            return
+
+        max_blocks = max_value_size // per_block_bytes
+        if max_blocks < 1:
+            logger.warning(
+                "DOCA MEMOS: a single GPU block (%d bytes) exceeds the device max "
+                "value size (%d bytes); capping at 1 block/object — transfers may "
+                "fail until block_size or the device limit changes",
+                per_block_bytes,
+                max_value_size,
+            )
+            max_blocks = 1
+
+        if self.gpu_blocks_per_file <= max_blocks:
+            logger.info(
+                "DOCA MEMOS: offloaded block fits device max value size "
+                "(%d GPU blocks/object x %d bytes <= %d bytes)",
+                self.gpu_blocks_per_file,
+                per_block_bytes,
+                max_value_size,
+            )
+            return
+
+        old_blocks = self.gpu_blocks_per_file
+        self.gpu_blocks_per_file = max_blocks
+        self.offloaded_block_size = self.gpu_blocks_per_file * self.hash_block_size
+        logger.warning(
+            "DOCA MEMOS: scaling offloaded block size to fit device max value "
+            "size (%d bytes, %d bytes/block): gpu_blocks_per_file %d -> %d, "
+            "offloaded block_size %d -> %d tokens",
+            max_value_size,
+            per_block_bytes,
+            old_blocks,
+            self.gpu_blocks_per_file,
+            old_blocks * self.hash_block_size,
+            self.offloaded_block_size,
+        )
+
     def get_manager(self) -> OffloadingManager:
         assert self.vllm_config.parallel_config.rank == 0, "Scheduler rank should be 0"
         if not self._manager:
             backend = self.extra_config.get("backend", "POSIX")
-            if backend == "OBJ":
+            if backend in NIXL_BACKENDS:
                 from llmd_nixl.manager import NixlStorageOffloadingManager
 
                 self.extra_config.setdefault("storage_medium", "OBJECT_STORE")
@@ -139,7 +234,7 @@ class SharedStorageOffloadingSpec(OffloadingSpec):
     ) -> Iterator[tuple[type[LoadStoreSpec], type[LoadStoreSpec], OffloadingHandler]]:
         if not self._handlers:
             backend = self.extra_config.get("backend", "POSIX")
-            if backend == "OBJ":
+            if backend in NIXL_BACKENDS:
                 from llmd_nixl.worker import NixlStorageOffloadingHandlers
 
                 handlers_cls = NixlStorageOffloadingHandlers

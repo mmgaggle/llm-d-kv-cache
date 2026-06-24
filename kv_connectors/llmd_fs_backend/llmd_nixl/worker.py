@@ -15,11 +15,12 @@
 from vllm.v1.kv_offload.base import CanonicalKVCaches
 
 from llmd_fs_backend.worker import StorageEngine, StorageOffloadingHandlers
+from llmd_nixl.memos_backend import MemosBackend
 from llmd_nixl.obj_backend import ObjBackend
 
 
 class NixlStorageOffloadingHandlers(StorageOffloadingHandlers):
-    """StorageOffloadingHandlers backed by the NIXL OBJ engine."""
+    """StorageOffloadingHandlers backed by a NIXL storage engine (OBJ or MEMOS)."""
 
     def _create_engine(
         self,
@@ -31,9 +32,11 @@ class NixlStorageOffloadingHandlers(StorageOffloadingHandlers):
         extra_config: dict,
         gds_mode: str,
     ) -> StorageEngine:
-        # ObjBackend only needs the flat tensor list from kv_caches.
+        # Both engines only need the flat tensor list from kv_caches.
         tensors = [ct.tensor for ct in kv_caches.tensors]
-        return ObjBackend(
+        backend = (extra_config or {}).get("backend", "OBJ")
+        engine_cls = MemosBackend if backend == "MEMOS" else ObjBackend
+        return engine_cls(
             io_threads=io_threads,
             gpu_blocks_per_file=gpu_blocks_per_file,
             tensors=tensors,
